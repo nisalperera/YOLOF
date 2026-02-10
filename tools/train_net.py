@@ -19,6 +19,7 @@ customizations.
 
 import logging
 import os
+import json
 from collections import OrderedDict
 from typing import Any, Dict, List, Set
 import torch
@@ -183,9 +184,38 @@ def setup(args):
     """
     Create configs and perform basic setups.
     """
+
+    from detectron2.data import MetadataCatalog, DatasetCatalog
+    from detectron2.data.datasets.coco import register_coco_instances
+
+    # Define paths for your datasets (assuming they were created in previous steps)
+    TRAIN_ANN_FILE = '/kaggle/input/2017-2017/annotations_trainval2017/annotations/instances_train2017.json'
+    TRAIN_IMG_DIR = '/kaggle/input/2017-2017/train2017/train2017'
+    VAL_ANN_FILE = '/kaggle/input/2017-2017/annotations_trainval2017/annotations/instances_val2017.json'
+    VAL_IMG_DIR = '/kaggle/input/2017-2017/val2017/val2017'
+
+    with open(TRAIN_ANN_FILE, "r") as r:
+        thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
+
+    print("Paths and categories defined.")
+
+    register_coco_instances("vehicle_train", {}, TRAIN_ANN_FILE, TRAIN_IMG_DIR)
+    register_coco_instances("vehicle_val", {}, VAL_ANN_FILE, VAL_IMG_DIR)
+
+    MetadataCatalog.get("vehicle_train").set(thing_classes=thing_classes)
+    MetadataCatalog.get("vehicle_val").set(thing_classes=thing_classes)
+
+    print("Datasets registered successfully!")
+    print("Available datasets:", DatasetCatalog.list())
+
     cfg = get_cfg()
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
+
+    cfg.MODEL.YOLOF.DECODER.NUM_CLASSES = len(thing_classes)
+    cfg.DATASETS.TRAIN = ("vehicle_train",)
+    cfg.DATASETS.TEST = ("vehicle_val",)
+
     cfg.freeze()
     default_setup(cfg, args)
     return cfg
@@ -222,6 +252,7 @@ def main(args):
 
 
 if __name__ == "__main__":
+    
     os.environ["OMP_NUM_THREADS"] = "1"
     args = default_argument_parser().parse_args()
     print("Command Line Args:", args)
