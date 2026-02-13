@@ -1,0 +1,26 @@
+{
+  "name": "YOLOF",
+  "runArgs": [
+    "--network=host",
+    "--ipc=host",
+    "--gpus=all",
+    "--name=YOLOF"
+  ],
+  "build": {
+    "context": "${localWorkspaceFolder}",
+    "dockerfile": "${localWorkspaceFolder}/docker/Dockerfile"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python@2025.14.0",
+        "ms-toolsai.jupyter@2025.6.0",
+        "ms-python.debugpy@2025.10.0",
+        "njpwerner.autodocstring@0.6.1"
+      ]
+    }
+  },
+  "remoteEnv": {
+    "DOCKER_BUILDKIT": "0"
+  }
+}
