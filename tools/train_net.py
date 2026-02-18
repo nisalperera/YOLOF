@@ -20,8 +20,12 @@ customizations.
 import logging
 import os
 import json
+import math
+
+from pathlib import Path
 from collections import OrderedDict
 from typing import Any, Dict, List, Set
+
 import torch
 import torch.nn as nn
 
@@ -43,12 +47,22 @@ from detectron2.evaluation import (
     SemSegEvaluator,
     verify_results,
 )
+
+from detectron2.data import MetadataCatalog, DatasetCatalog
+from detectron2.data.datasets.coco import register_coco_instances
+
+from detectron2.utils.events import EventStorage
 from detectron2.modeling import GeneralizedRCNNWithTTA
 
 from yolof.checkpoint import YOLOFCheckpointer
 from yolof.config import get_cfg
 from yolof.data import YOLOFDtasetMapper
+from yolof.checkpoint import YOLOFCheckpointer
+from yolof.hooks import GradCAMHook, BestCheckpointerAPARF1, EarlyStoppingHook
+from yolof.evaluation.coco_ar_ap import COCOEvaluatorWithAPandAR
+from yolof.data.samplers import EvenlyDistributedInferenceSampler
 
+import wandb
 
 class Trainer(DefaultTrainer):
     """
@@ -57,6 +71,11 @@ class Trainer(DefaultTrainer):
     are working on a new research project. In that case you can write your
     own training loop. You can use "tools/plain_train_net.py" as an example.
     """
+
+    def __init__(self, cfg):
+        super().__init__(cfg)
+
+        wandb.init(entity="nisalperera", project="Thesis", config=cfg, sync_tensorboard=True)
 
     @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
@@ -82,7 +101,7 @@ class Trainer(DefaultTrainer):
             )
         if evaluator_type in ["coco", "coco_panoptic_seg"]:
             evaluator_list.append(
-                COCOEvaluator(dataset_name, output_dir=output_folder))
+                COCOEvaluatorWithAPandAR(dataset_name, output_dir=output_folder))
         if evaluator_type == "coco_panoptic_seg":
             evaluator_list.append(
                 COCOPanopticEvaluator(dataset_name, output_folder))
@@ -178,6 +197,48 @@ class Trainer(DefaultTrainer):
         res = cls.test(cfg, model, evaluators)
         res = OrderedDict({k + "_TTA": v for k, v in res.items()})
         return res
+    
+    def build_hooks(self):
+        # Add hooks for saving best model based on bbox AP in evalutation
+        cfg = self.cfg.clone()
+        hooks = super().build_hooks()
+        # hooks.insert(-1, EarlyStoppingHook(log_dir=cfg.OUTPUT_DIR, 
+        #                                    es_metric=("bbox/AP", "bbox/AR-maxDets=100"), 
+        #                                    eval_period=cfg.TEST.EVAL_PERIOD, mode="min"))
+        hooks.insert(-1, BestCheckpointerAPARF1(cfg.TEST.EVAL_PERIOD,
+                                          YOLOFCheckpointer(self.model, cfg.OUTPUT_DIR),
+                                          ("bbox/AP",), "max"))
+        return hooks
+
+    def train(self):
+        """
+        Args:
+            start_iter, max_iter (int): See docs above
+        """
+        logger = logging.getLogger("detectron2.trainer")
+        logger.info(f"Starting training from iteration {self.start_iter}. Evaluation will happen every {self.cfg.TEST.EVAL_PERIOD} iterations.")
+
+        self.stop_training = False
+
+        with EventStorage(self.start_iter) as self.storage:
+            try:
+                self.before_train()
+                for self.iter in range(self.start_iter, self.max_iter):
+                    if self.stop_training:
+                        logger.info("Training is stopped due to EarlyStopping.")
+                        break
+                    self.before_step()
+                    self.run_step()
+                    self.after_step()
+                # self.iter == max_iter can be used by `after_train` to
+                # tell whether the training successfully finished or failed
+                # due to exceptions.
+                self.iter += 1
+            except Exception:
+                logger.exception("Exception during training:")
+                raise
+            finally:
+                self.after_train()
 
 
 def setup(args):
@@ -185,14 +246,13 @@ def setup(args):
     Create configs and perform basic setups.
     """
 
-    from detectron2.data import MetadataCatalog, DatasetCatalog
-    from detectron2.data.datasets.coco import register_coco_instances
+    root_dir = Path(__file__).resolve().parents[1]
 
     # Define paths for your datasets (assuming they were created in previous steps)
-    TRAIN_ANN_FILE = '/kaggle/input/2017-2017/annotations_trainval2017/annotations/instances_train2017.json'
-    TRAIN_IMG_DIR = '/kaggle/input/2017-2017/train2017/train2017'
-    VAL_ANN_FILE = '/kaggle/input/2017-2017/annotations_trainval2017/annotations/instances_val2017.json'
-    VAL_IMG_DIR = '/kaggle/input/2017-2017/val2017/val2017'
+    TRAIN_ANN_FILE = f'{root_dir}/datasets/batch4/collection/cocoplus_dataset_mapped.json'
+    TRAIN_IMG_DIR = f'{root_dir}/datasets/batch4/images'
+    VAL_ANN_FILE = f'{root_dir}/datasets/batch120/collection/cocoplus_dataset_mapped.json'
+    VAL_IMG_DIR = f'{root_dir}/datasets/batch120/images'
 
     with open(TRAIN_ANN_FILE, "r") as r:
         thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
@@ -209,12 +269,27 @@ def setup(args):
     print("Available datasets:", DatasetCatalog.list())
 
     cfg = get_cfg()
+    cfg.set_new_allowed(True)
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
+
+    iters2epoch = math.floor(len(DatasetCatalog.get("vehicle_train")) / (cfg.SOLVER.IMS_PER_BATCH * args.num_gpus))
+    max_iter = cfg.SOLVER.MAX_ITER * iters2epoch
+    steps = cfg.SOLVER.STEPS
 
     cfg.MODEL.YOLOF.DECODER.NUM_CLASSES = len(thing_classes)
     cfg.DATASETS.TRAIN = ("vehicle_train",)
     cfg.DATASETS.TEST = ("vehicle_val",)
+    cfg.SOLVER.MAX_ITER = max_iter
+    cfg.SOLVER.IMS_PER_BATCH = 8
+    cfg.TEST.EVAL_PERIOD = 2500
+    cfg.MODEL.YOLOF.RETURN_VAL_LOSS = True
+    cfg.OUTPUT_DIR = "./output"
+
+    cfg.SOLVER.STEPS = tuple([int(max_iter * step) for step in steps])
+    cfg.SOLVER.IMS_PER_BATCH = args.num_gpus * cfg.SOLVER.IMS_PER_BATCH
+    cfg.SOLVER.CHECKPOINT_PERIOD = int(iters2epoch * cfg.SOLVER.CHECKPOINT_PERIOD) 
+    cfg.TEST.EVAL_PERIOD = int(iters2epoch * cfg.TEST.EVAL_PERIOD) 
 
     cfg.freeze()
     default_setup(cfg, args)
@@ -248,6 +323,13 @@ def main(args):
             [hooks.EvalHook(0,
                             lambda: trainer.test_with_TTA(cfg, trainer.model))]
         )
+
+    # Change the layer of your choice
+    trainer.register_hooks([
+        GradCAMHook("decoder.cls_subnet", cfg=cfg),
+        hooks.PeriodicCheckpointer(YOLOFCheckpointer(trainer.model, cfg.OUTPUT_DIR, save_to_disk=True), cfg.SOLVER.CHECKPOINT_PERIOD, trainer.max_iter)
+    ])
+
     return trainer.train()
 
 

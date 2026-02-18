@@ -19,10 +19,8 @@ except Exception:
         "~1.5G memory saving during training."
     )
 
-
     def mish(x):
         return x.mul(F.softplus(x).tanh())
-
 
     class Mish(nn.Module):
         def __init__(self):
@@ -32,26 +30,32 @@ except Exception:
             return mish(x)
 
 
-def ConvNormActivation(inplanes,
-                       planes,
-                       kernel_size=3,
-                       stride=1,
-                       padding=0,
-                       dilation=1,
-                       groups=1,
-                       norm_type="BN"):
+def ConvNormActivation(
+    inplanes,
+    planes,
+    kernel_size=3,
+    stride=1,
+    padding=0,
+    dilation=1,
+    groups=1,
+    norm_type="BN",
+):
     """
     A help function to build a 'conv-bn-activation' module
     """
     layers = []
-    layers.append(nn.Conv2d(inplanes,
-                            planes,
-                            kernel_size=kernel_size,
-                            stride=stride,
-                            padding=padding,
-                            dilation=dilation,
-                            groups=groups,
-                            bias=False))
+    layers.append(
+        nn.Conv2d(
+            inplanes,
+            planes,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
+            bias=False,
+        )
+    )
     layers.append(get_norm(norm_type, planes, eps=1e-4, momentum=0.03))
     layers.append(Mish())
     return nn.Sequential(*layers)
@@ -59,12 +63,7 @@ def ConvNormActivation(inplanes,
 
 class DarkBlock(nn.Module):
 
-    def __init__(self,
-                 inplanes,
-                 planes,
-                 dilation=1,
-                 downsample=None,
-                 norm_type="BN"):
+    def __init__(self, inplanes, planes, dilation=1, downsample=None, norm_type="BN"):
         """Residual Block for DarkNet.
 
         This module has the dowsample layer (optional),
@@ -78,12 +77,7 @@ class DarkBlock(nn.Module):
         self.bn2 = get_norm(norm_type, planes, eps=1e-4, momentum=0.03)
 
         self.conv1 = nn.Conv2d(
-            planes,
-            inplanes,
-            kernel_size=1,
-            stride=1,
-            padding=0,
-            bias=False
+            planes, inplanes, kernel_size=1, stride=1, padding=0, bias=False
         )
 
         self.conv2 = nn.Conv2d(
@@ -93,7 +87,7 @@ class DarkBlock(nn.Module):
             stride=1,
             padding=dilation,
             dilation=dilation,
-            bias=False
+            bias=False,
         )
 
         self.activation = Mish()
@@ -139,14 +133,16 @@ class CrossStagePartialBlock(nn.Module):
         norm_type (str): normalization layer type.
     """
 
-    def __init__(self,
-                 inplanes,
-                 planes,
-                 stage_layers,
-                 is_csp_first_stage,
-                 dilation=1,
-                 stride=2,
-                 norm_type="BN"):
+    def __init__(
+        self,
+        inplanes,
+        planes,
+        stage_layers,
+        is_csp_first_stage,
+        dilation=1,
+        stride=2,
+        norm_type="BN",
+    ):
         super(CrossStagePartialBlock, self).__init__()
 
         self.base_layer = ConvNormActivation(
@@ -156,7 +152,7 @@ class CrossStagePartialBlock(nn.Module):
             stride=stride,
             padding=dilation,
             dilation=dilation,
-            norm_type=norm_type
+            norm_type=norm_type,
         )
         self.partial_transition1 = ConvNormActivation(
             inplanes=planes,
@@ -164,7 +160,7 @@ class CrossStagePartialBlock(nn.Module):
             kernel_size=1,
             stride=1,
             padding=0,
-            norm_type=norm_type
+            norm_type=norm_type,
         )
         self.stage_layers = stage_layers
 
@@ -174,7 +170,7 @@ class CrossStagePartialBlock(nn.Module):
             kernel_size=1,
             stride=1,
             padding=0,
-            norm_type=norm_type
+            norm_type=norm_type,
         )
         self.fuse_transition = ConvNormActivation(
             inplanes=planes if not is_csp_first_stage else planes * 2,
@@ -182,7 +178,7 @@ class CrossStagePartialBlock(nn.Module):
             kernel_size=1,
             stride=1,
             padding=0,
-            norm_type=norm_type
+            norm_type=norm_type,
         )
 
     def forward(self, x):
@@ -199,13 +195,9 @@ class CrossStagePartialBlock(nn.Module):
         return out
 
 
-def make_dark_layer(block,
-                    inplanes,
-                    planes,
-                    num_blocks,
-                    dilation=1,
-                    stride=2,
-                    norm_type="BN"):
+def make_dark_layer(
+    block, inplanes, planes, num_blocks, dilation=1, stride=2, norm_type="BN"
+):
     downsample = ConvNormActivation(
         inplanes=inplanes,
         planes=planes,
@@ -213,7 +205,7 @@ def make_dark_layer(block,
         stride=stride,
         padding=dilation,
         dilation=dilation,
-        norm_type=norm_type
+        norm_type=norm_type,
     )
 
     layers = []
@@ -224,26 +216,22 @@ def make_dark_layer(block,
                 planes=planes,
                 downsample=downsample if i == 0 else None,
                 dilation=dilation,
-                norm_type=norm_type
+                norm_type=norm_type,
             )
         )
     return nn.Sequential(*layers)
 
 
-def make_cspdark_layer(block,
-                       inplanes,
-                       planes,
-                       num_blocks,
-                       is_csp_first_stage,
-                       dilation=1,
-                       norm_type="BN"):
+def make_cspdark_layer(
+    block, inplanes, planes, num_blocks, is_csp_first_stage, dilation=1, norm_type="BN"
+):
     downsample = ConvNormActivation(
         inplanes=planes,
         planes=planes if is_csp_first_stage else inplanes,
         kernel_size=1,
         stride=1,
         padding=0,
-        norm_type=norm_type
+        norm_type=norm_type,
     )
 
     layers = []
@@ -254,7 +242,7 @@ def make_cspdark_layer(block,
                 planes=planes if is_csp_first_stage else inplanes,
                 downsample=downsample if i == 0 else None,
                 dilation=dilation,
-                norm_type=norm_type
+                norm_type=norm_type,
             )
         )
     return nn.Sequential(*layers)
@@ -273,19 +261,19 @@ class DarkNet(Backbone):
         res5_dilation (int): dilation for the last stage
     """
 
-    arch_settings = {
-        53: (DarkBlock, (1, 2, 8, 8, 4))
-    }
+    arch_settings = {53: (DarkBlock, (1, 2, 8, 8, 4))}
 
-    def __init__(self,
-                 depth,
-                 with_csp=False,
-                 out_features=["res5"],
-                 norm_type="BN",
-                 res5_dilation=1):
+    def __init__(
+        self,
+        depth,
+        with_csp=False,
+        out_features=["res5"],
+        norm_type="BN",
+        res5_dilation=1,
+    ):
         super(DarkNet, self).__init__()
         if depth not in self.arch_settings:
-            raise KeyError('invalid depth {} for resnet'.format(depth))
+            raise KeyError("invalid depth {} for resnet".format(depth))
         self.with_csp = with_csp
         self._out_features = out_features
         self.norm_type = norm_type
@@ -298,7 +286,7 @@ class DarkNet(Backbone):
 
         self.dark_layers = []
         for i, num_blocks in enumerate(self.stage_blocks):
-            planes = 64 * 2 ** i
+            planes = 64 * 2**i
             dilation = 1
             stride = 2
             if i == 4 and self.res5_dilation == 2:
@@ -312,7 +300,7 @@ class DarkNet(Backbone):
                     num_blocks=num_blocks,
                     dilation=dilation,
                     stride=stride,
-                    norm_type=self.norm_type
+                    norm_type=self.norm_type,
                 )
             else:
                 layer = make_cspdark_layer(
@@ -322,7 +310,7 @@ class DarkNet(Backbone):
                     num_blocks=num_blocks,
                     is_csp_first_stage=True if i == 0 else False,
                     dilation=dilation,
-                    norm_type=self.norm_type
+                    norm_type=self.norm_type,
                 )
                 layer = CrossStagePartialBlock(
                     self.inplanes,
@@ -331,10 +319,10 @@ class DarkNet(Backbone):
                     is_csp_first_stage=True if i == 0 else False,
                     dilation=dilation,
                     stride=stride,
-                    norm_type=self.norm_type
+                    norm_type=self.norm_type,
                 )
             self.inplanes = planes
-            layer_name = 'layer{}'.format(i + 1)
+            layer_name = "layer{}".format(i + 1)
             self.add_module(layer_name, layer)
             self.dark_layers.append(layer_name)
 
@@ -350,16 +338,9 @@ class DarkNet(Backbone):
 
     def _make_stem_layer(self):
         self.conv1 = nn.Conv2d(
-            3,
-            self.inplanes,
-            kernel_size=3,
-            stride=1,
-            padding=1,
-            bias=False
+            3, self.inplanes, kernel_size=3, stride=1, padding=1, bias=False
         )
-        self.bn1 = get_norm(
-            self.norm_type, self.inplanes, eps=1e-4, momentum=0.03
-        )
+        self.bn1 = get_norm(self.norm_type, self.inplanes, eps=1e-4, momentum=0.03)
         self.act1 = Mish()
 
     def forward(self, x):
@@ -400,5 +381,5 @@ def build_darknet_backbone(cfg, input_shape=None):
         with_csp=with_csp,
         out_features=out_features,
         norm_type=norm_type,
-        res5_dilation=res5_dilation
+        res5_dilation=res5_dilation,
     )

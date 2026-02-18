@@ -7,7 +7,7 @@ from detectron2.data.transforms import (
     Transform,
     HFlipTransform,
     VFlipTransform,
-    ResizeTransform
+    ResizeTransform,
 )
 
 __all__ = [
@@ -17,7 +17,7 @@ __all__ = [
     "HFlipTransform",
     "VFlipTransform",
     "ResizeTransform",
-    "YOLOFShiftTransform"
+    "YOLOFShiftTransform",
 ]
 
 
@@ -47,12 +47,14 @@ class YOLOFJitterCropTransform(Transform):
         output_size (tuple(int)): output size (w, h).
     """
 
-    def __init__(self,
-                 pleft: int,
-                 pright: int,
-                 ptop: int,
-                 pbot: int,
-                 output_size: Tuple[Union[int, Any], Union[int, Any]]):
+    def __init__(
+        self,
+        pleft: int,
+        pright: int,
+        ptop: int,
+        pbot: int,
+        output_size: Tuple[Union[int, Any], Union[int, Any]],
+    ):
         super().__init__()
         self._set_attributes(locals())
 
@@ -71,30 +73,28 @@ class YOLOFJitterCropTransform(Transform):
         swidth, sheight = self.output_size
 
         # x1,y1,x2,y2
-        src_rect = [
-            self.pleft, self.ptop, swidth + self.pleft, sheight + self.ptop
-        ]
+        src_rect = [self.pleft, self.ptop, swidth + self.pleft, sheight + self.ptop]
         img_rect = [0, 0, ow, oh]
         # rect intersection
         new_src_rect = [
             max(src_rect[0], img_rect[0]),
             max(src_rect[1], img_rect[1]),
             min(src_rect[2], img_rect[2]),
-            min(src_rect[3], img_rect[3])
+            min(src_rect[3], img_rect[3]),
         ]
         dst_rect = [
             max(0, -self.pleft),
             max(0, -self.ptop),
             max(0, -self.pleft) + new_src_rect[2] - new_src_rect[0],
-            max(0, -self.ptop) + new_src_rect[3] - new_src_rect[1]
+            max(0, -self.ptop) + new_src_rect[3] - new_src_rect[1],
         ]
 
         # crop the image
         cropped = np.zeros([sheight, swidth, 3], dtype=img.dtype)
         cropped[:, :, :] = np.mean(img, axis=(0, 1))
-        cropped[dst_rect[1]:dst_rect[3], dst_rect[0]:dst_rect[2]] = \
-            img[new_src_rect[1]:new_src_rect[3],
-            new_src_rect[0]:new_src_rect[2]]
+        cropped[dst_rect[1] : dst_rect[3], dst_rect[0] : dst_rect[2]] = img[
+            new_src_rect[1] : new_src_rect[3], new_src_rect[0] : new_src_rect[2]
+        ]
         return cropped
 
     def apply_coords(self, coords: np.ndarray) -> np.ndarray:
@@ -161,10 +161,10 @@ class YOLOFDistortTransform(Transform):
         dexp = self._rand_scale(self.exposure)
 
         img = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
-        img = np.asarray(img, dtype=np.float32) / 255.
+        img = np.asarray(img, dtype=np.float32) / 255.0
         img[:, :, 1] *= dsat
         img[:, :, 2] *= dexp
-        H = img[:, :, 0] + dhue * 179 / 255.
+        H = img[:, :, 0] + dhue * 179 / 255.0
 
         if dhue > 0:
             H[H > 1.0] -= 1.0
@@ -259,13 +259,13 @@ class YOLOFShiftTransform(Transform):
         new_img = np.zeros_like(img)
         if self.shift_x < 0:
             new_x = 0
-            orig_x = - self.shift_x
+            orig_x = -self.shift_x
         else:
             new_x = self.shift_x
             orig_x = 0
         if self.shift_y < 0:
             new_y = 0
-            orig_y = - self.shift_y
+            orig_y = -self.shift_y
         else:
             new_y = self.shift_y
             orig_y = 0
@@ -274,15 +274,17 @@ class YOLOFShiftTransform(Transform):
             img_h, img_w = img.shape[:2]
             new_h = img_h - np.abs(self.shift_y)
             new_w = img_w - np.abs(self.shift_x)
-            new_img[new_y:new_y + new_h, new_x:new_x + new_w] \
-                = img[orig_y:orig_y + new_h, orig_x:orig_x + new_w]
+            new_img[new_y : new_y + new_h, new_x : new_x + new_w] = img[
+                orig_y : orig_y + new_h, orig_x : orig_x + new_w
+            ]
             return new_img
         else:
             img_h, img_w = img.shape[1:3]
             new_h = img_h - np.abs(self.shift_y)
             new_w = img_w - np.abs(self.shift_x)
-            new_img[..., new_y:new_y + new_h, new_x:new_x + new_w, :] \
-                = img[..., orig_y:orig_y + new_h, orig_x:orig_x + new_w, :]
+            new_img[..., new_y : new_y + new_h, new_x : new_x + new_w, :] = img[
+                ..., orig_y : orig_y + new_h, orig_x : orig_x + new_w, :
+            ]
             return new_img
 
     def apply_coords(self, coords: np.ndarray) -> np.ndarray:
@@ -305,11 +307,15 @@ class YOLOFShiftTransform(Transform):
         Apply shift transform on meta_infos.
         """
         meta_infos["jitter_pad_left"] = max(
-            0, meta_infos["jitter_pad_left"] - self.shift_x)
+            0, meta_infos["jitter_pad_left"] - self.shift_x
+        )
         meta_infos["jitter_pad_right"] = max(
-            0, meta_infos["jitter_pad_right"] + self.shift_x)
+            0, meta_infos["jitter_pad_right"] + self.shift_x
+        )
         meta_infos["jitter_pad_top"] = max(
-            0, meta_infos["jitter_pad_top"] - self.shift_y)
+            0, meta_infos["jitter_pad_top"] - self.shift_y
+        )
         meta_infos["jitter_pad_bot"] = max(
-            0, meta_infos["jitter_pad_bot"] + self.shift_y)
+            0, meta_infos["jitter_pad_bot"] + self.shift_y
+        )
         return meta_infos

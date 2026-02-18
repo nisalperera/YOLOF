@@ -2,8 +2,7 @@ from functools import partial
 
 import torch.nn as nn
 
-from detectron2.layers import (BatchNorm2d, NaiveSyncBatchNorm,
-                               FrozenBatchNorm2d)
+from detectron2.layers import BatchNorm2d, NaiveSyncBatchNorm, FrozenBatchNorm2d
 from detectron2.utils import env
 
 
@@ -27,8 +26,9 @@ def get_norm(norm, out_channels, **kwargs):
         norm = {
             "BN": BatchNorm2d,
             # Fixed in https://github.com/pytorch/pytorch/pull/36382
-            "SyncBN": NaiveSyncBatchNorm if env.TORCH_VERSION <= (
-                1, 5) else nn.SyncBatchNorm,
+            "SyncBN": (
+                NaiveSyncBatchNorm if env.TORCH_VERSION <= (1, 5) else nn.SyncBatchNorm
+            ),
             "FrozenBN": FrozenBatchNorm2d,
             "GN": lambda channels: nn.GroupNorm(32, channels),
             # for debugging:

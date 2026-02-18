@@ -12,41 +12,24 @@ ENV CUDA_VERSION=${CUDA_VERSION}
 ENV TORCH_VERSION=2.8.0
 ENV TORCHVISION_VERSION=0.23.0
 
+# Create non-root user early (as root)
 ARG USER=ubuntu
-ENV USER=$USER
 ARG UID=1000
 ARG GID=$UID
-RUN if ! id -u $UID >/dev/null 2>&1; then \
-        groupadd --gid $GID $USER && \
-        useradd -s /bin/bash --uid $UID --gid $GID -m $USER; \
-    fi
-# Add sudo support for the non-root user
-RUN apt-get update && \
+
+RUN groupadd --gid $GID $USER && \
+    useradd -s /bin/bash --uid $UID --gid $GID -m $USER && \
+    apt-get update && \
     apt-get install -y sudo && \
     echo "$USER ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/$USER && \
     chmod 0440 /etc/sudoers.d/$USER
 
-# Switch from root to user
-USER $USER
-
-ARG HOME=/home/${USER}
-ENV HOME=${HOME}
-
-WORKDIR ${HOME}
-
-RUN sudo apt-get update && sudo apt-get install -y \
+# Install system packages as root (more efficient)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     gnupg \
     curl \
-    software-properties-common
-
-# Timezone non-interactive
-# RUN sudo echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selections \
-#     && sudo apt-get update && sudo apt-get install -y tzdata \
-#     && sudo rm -rf /var/lib/apt/lists/*
-
-# Core packages
-RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+    software-properties-common \
     git \
     python3-dev \
     python3-pip \
@@ -85,29 +68,49 @@ RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends \
     libdc1394-dev \
     openssh-client \
     ninja-build \
-    && sudo apt-get clean && sudo rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# PyTorch 2.8 + cu126
+# Switch to non-root user for application setup
+USER $USER
+ARG HOME=/home/${USER}
+ENV HOME=${HOME}
+WORKDIR ${HOME}
+
+# Install PyTorch (as non-root user)
 SHELL ["/bin/bash", "-c"]
 RUN IFS='.' read -r MAJOR MINOR _ <<< "$CUDA_VERSION" && \
     CUDA_VERSION_NO_DOT="${MAJOR}${MINOR}" && \
-    python3 -m pip install \
+    python3 -m pip install --no-cache-dir \
         torch==${TORCH_VERSION}+cu${CUDA_VERSION_NO_DOT} \
         torchvision==${TORCHVISION_VERSION}+cu${CUDA_VERSION_NO_DOT} \
         --index-url https://download.pytorch.org/whl/cu${CUDA_VERSION_NO_DOT}
 SHELL ["/bin/sh", "-c"]
 
-# mish-cuda, pillow-simd
-RUN python3 -m pip install 'git+https://github.com/JunnYu/mish-cuda.git'
-RUN python3 -m pip install 'git+https://github.com/facebookresearch/detectron2.git'
-RUN python3 -m pip uninstall pillow -y
-RUN CC="cc -mavx2" python3 -m pip install -U --force-reinstall pillow-simd
+# Install Python dependencies from git repos
+RUN python3 -m pip install --no-cache-dir 'git+https://github.com/JunnYu/mish-cuda.git' && \
+    python3 -m pip install --no-cache-dir 'git+https://github.com/facebookresearch/detectron2.git'
 
-COPY . $HOME/YOLOF
-RUN sudo chown -R ${USER}:${USER} $HOME/YOLOF
-RUN python3 -m pip install -e ${HOME}/YOLOF
+# Replace pillow with pillow-simd
+RUN python3 -m pip uninstall pillow -y && \
+    CC="cc -mavx2" python3 -m pip install -U --force-reinstall pillow-simd
 
-COPY requirements.txt /tmp/requirements.txt
-RUN python3 -m pip install -r /tmp/requirements.txt
+# Install requirements.txt BEFORE copying code (better caching)
+COPY --chown=${UID}:${GID} requirements.txt /tmp/requirements.txt
+RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Copy application code (use --chown to avoid extra layer)
+COPY --chown=${UID}:${GID} . ${HOME}/YOLOF
+
+# Install YOLOF package
+RUN python3 -m pip install --no-cache-dir -e ${HOME}/YOLOF
+
+
+ARG WANDB_API_KEY
+ENV WANDB_API_KEY=${WANDB_API_KEY}
+
+# Only login if key is provided
+RUN if [ -n "$WANDB_API_KEY" ]; then \
+        python3 -m wandb login --relogin $WANDB_API_KEY; \
+    fi
 
 ENV PYTHONUNBUFFERED=1

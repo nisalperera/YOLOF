@@ -1,27 +1,30 @@
+import sys
 import copy
 import logging
-import numpy as np
 from typing import Dict, List, Tuple
-import torch
-from fvcore.nn import sigmoid_focal_loss_jit, giou_loss
-from torch import Tensor, nn
-import torch.distributed as dist
-from torchvision.ops.boxes import box_iou
 
+import numpy as np
+import torch
+import torch.distributed as dist
 from detectron2.config import configurable
 from detectron2.data.detection_utils import convert_image_to_rgb
+from detectron2.layers import batched_nms, cat, nms, nonzero_tuple
 from detectron2.modeling.anchor_generator import build_anchor_generator
 from detectron2.modeling.backbone import build_backbone
 from detectron2.modeling.meta_arch import META_ARCH_REGISTRY
 from detectron2.modeling.postprocessing import detector_postprocess
-from detectron2.layers import batched_nms, cat, nonzero_tuple
-from detectron2.structures import Boxes, ImageList, Instances
+from detectron2.structures import Boxes, ImageList, Instances, BoxMode
 from detectron2.utils import comm
 from detectron2.utils.events import get_event_storage
+from detectron2.data.detection_utils import annotations_to_instances
+from fvcore.nn import giou_loss, sigmoid_focal_loss_jit
+from torch import Tensor, nn
+from torchvision.ops.boxes import box_iou
+from torchvision.ops import complete_box_iou_loss as ciou_loss, distance_box_iou_loss as diou_loss
 
-from .encoder import DilatedEncoder
-from .decoder import Decoder
 from .box_regression import YOLOFBox2BoxTransform
+from .decoder import Decoder
+from .encoder import DilatedEncoder
 from .uniform_matcher import UniformMatcher
 
 __all__ = ["YOLOF"]
@@ -49,29 +52,30 @@ class YOLOF(nn.Module):
 
     @configurable
     def __init__(
-            self,
-            *,
-            backbone,
-            encoder,
-            decoder,
-            anchor_generator,
-            box2box_transform,
-            anchor_matcher,
-            num_classes,
-            backbone_level="res5",
-            pos_ignore_thresh=0.15,
-            neg_ignore_thresh=0.7,
-            focal_loss_alpha=0.25,
-            focal_loss_gamma=2.0,
-            box_reg_loss_type="giou",
-            test_score_thresh=0.05,
-            test_topk_candidates=1000,
-            test_nms_thresh=0.6,
-            max_detections_per_image=100,
-            pixel_mean,
-            pixel_std,
-            vis_period=0,
-            input_format="BGR"
+        self,
+        *,
+        backbone,
+        encoder,
+        decoder,
+        anchor_generator,
+        box2box_transform,
+        anchor_matcher,
+        num_classes,
+        backbone_level="res5",
+        pos_ignore_thresh=0.15,
+        neg_ignore_thresh=0.7,
+        focal_loss_alpha=0.25,
+        focal_loss_gamma=2.0,
+        box_reg_loss_type="giou",
+        test_score_thresh=0.05,
+        test_topk_candidates=1000,
+        test_nms_thresh=0.6,
+        max_detections_per_image=100,
+        pixel_mean,
+        pixel_std,
+        vis_period=0,
+        input_format="BGR",
+        return_val_loss=False,  # To log validation loss in training loop
     ):
         """
         NOTE: this interface is experimental.
@@ -96,7 +100,7 @@ class YOLOF(nn.Module):
             # Loss parameters:
             focal_loss_alpha (float): focal_loss_alpha
             focal_loss_gamma (float): focal_loss_gamma
-            box_reg_loss_type (str): Options are "smooth_l1", "giou"
+            box_reg_loss_type (str): Options are "smooth_l1", "giou", diou, ciou
             # Inference parameters:
             test_score_thresh (float): Inference cls score threshold, only
                 anchors with score > INFERENCE_TH are considered for
@@ -144,8 +148,10 @@ class YOLOF(nn.Module):
         # Loss parameters:
         self.focal_loss_alpha = focal_loss_alpha
         self.focal_loss_gamma = focal_loss_gamma
-        self.box_reg_loss_type = box_reg_loss_type
-        assert self.box_reg_loss_type == 'giou', "Only support GIoU Loss."
+        # print(sys.modules[__name__])
+        assert box_reg_loss_type in ["smooth_l1", "giou", "diou", "ciou"], \
+            f"Unsupported box regression loss type: {box_reg_loss_type}"
+        self.box_reg_loss = getattr(sys.modules[__name__], box_reg_loss_type + "_loss")  # e.g., "giou_loss", "smooth_l1_loss"
         # Inference parameters:
         self.test_score_thresh = test_score_thresh
         self.test_topk_candidates = test_topk_candidates
@@ -154,6 +160,9 @@ class YOLOF(nn.Module):
         # Vis parameters
         self.vis_period = vis_period
         self.input_format = input_format
+
+        # Whether to return validation loss in training loop
+        self.return_val_loss = return_val_loss
 
         self.register_buffer(
             "pixel_mean",
@@ -203,6 +212,8 @@ class YOLOF(nn.Module):
             # Vis parameters
             "vis_period": cfg.VIS_PERIOD,
             "input_format": cfg.INPUT.FORMAT,
+            # Whether to return validation loss in training loop
+            "return_val_loss": cfg.MODEL.YOLOF.RETURN_VAL_LOSS if "RETURN_VAL_LOSS" in cfg.MODEL.YOLOF else False,
         }
 
     @property
@@ -305,6 +316,23 @@ class YOLOF(nn.Module):
 
             return losses
         else:
+            losses = None
+            if self.return_val_loss:
+                # If we are in validation mode, we return the results
+                # and the losses for logging purposes.
+                gt_instances = []
+                for i, x in enumerate(batched_inputs):
+                    if not isinstance(x["instances"], Instances):
+                        image_size = images.image_sizes[i]
+                        gt_instances.append(annotations_to_instances(x["annotations"], image_size).to(self.device))
+                    else:
+                        gt_instances.append(x["instances"].to(self.device))
+
+                indices = self.get_ground_truth(anchors, pred_anchor_deltas, gt_instances)
+                losses = self.losses(
+                    indices, gt_instances, anchors, pred_logits, pred_anchor_deltas
+                )
+
             results = self.inference(
                 anchors_image,
                 pred_logits,
@@ -313,6 +341,7 @@ class YOLOF(nn.Module):
             )
             if torch.jit.is_scripting():
                 return results
+
             processed_results = []
             for results_per_image, input_per_image, image_size in zip(
                     results, batched_inputs, images.image_sizes
@@ -320,7 +349,20 @@ class YOLOF(nn.Module):
                 height = input_per_image.get("height", image_size[0])
                 width = input_per_image.get("width", image_size[1])
                 r = detector_postprocess(results_per_image, height, width)
-                processed_results.append({"instances": r})
+
+                if self.return_val_loss:
+                    processed_results.append({
+                        "instances": r, 
+                        "losses": losses,  # Include losses for logging
+                        # "anchors": anchors, 
+                        # "pred_anchor_deltas": pred_anchor_deltas, 
+                        # "pred_logits": pred_logits,
+                        # "anchor_matcher": self.anchor_matcher,
+                        # "box2box_transform": self.box2box_transform
+                    })
+                else:
+                    processed_results.append({"instances": r})
+
             return processed_results
 
     def losses(self,
@@ -329,6 +371,7 @@ class YOLOF(nn.Module):
                anchors,
                pred_class_logits,
                pred_anchor_deltas):
+        
         pred_class_logits = cat(
             pred_class_logits, dim=1).view(-1, self.num_classes)
         pred_anchor_deltas = cat(pred_anchor_deltas, dim=1).view(-1, 4)
@@ -539,6 +582,5 @@ class YOLOF(nn.Module):
         """
         images = [x["image"].to(self.device) for x in batched_inputs]
         images = [(x - self.pixel_mean) / self.pixel_std for x in images]
-        images = ImageList.from_tensors(images,
-                                        self.backbone.size_divisibility)
+        images = ImageList.from_tensors(images, self.backbone.size_divisibility)
         return images
