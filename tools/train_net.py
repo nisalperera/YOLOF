@@ -250,9 +250,9 @@ def setup(args):
 
     # Define paths for your datasets (assuming they were created in previous steps)
     TRAIN_ANN_FILE = f'/kaggle/input/2017-2017/annotations_trainval2017/annotations/instances_train2017.json'
-    TRAIN_IMG_DIR = f'/kaggle/input/2017-2017/train2017'
+    TRAIN_IMG_DIR = f'/kaggle/input/2017-2017/train2017/train2017'
     VAL_ANN_FILE = f'/kaggle/input/2017-2017/annotations_trainval2017/annotations/instances_val2017.json'
-    VAL_IMG_DIR = f'/kaggle/input/2017-2017/val2017'
+    VAL_IMG_DIR = f'/kaggle/input/2017-2017/val2017/val2017'
 
     with open(TRAIN_ANN_FILE, "r") as r:
         thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
