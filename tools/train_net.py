@@ -278,6 +278,7 @@ def setup(args):
     warmup_iters = cfg.SOLVER.WARMUP_ITERS * iters2epoch
     steps = cfg.SOLVER.STEPS
 
+    cfg.MODEL.YOLOF.DECODER.NUM_CLASSES = len(thing_classes)
     cfg.MODEL.YOLOF.RETURN_VAL_LOSS = True
 
     cfg.DATASETS.TRAIN = ("vehicle_train",)
