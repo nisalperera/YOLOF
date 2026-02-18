@@ -4,6 +4,9 @@ MODEL:
     NAME: "build_resnet_backbone"
   RESNETS:
     OUT_FEATURES: ["res5"]
+  YOLOF:
+    DECODER:
+      NUM_CLASSES: 20
 DATASETS:
   TRAIN: ("coco_2017_train",)
   TEST: ("coco_2017_val",)
