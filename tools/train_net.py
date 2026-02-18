@@ -249,10 +249,10 @@ def setup(args):
     root_dir = Path(__file__).resolve().parents[1]
 
     # Define paths for your datasets (assuming they were created in previous steps)
-    TRAIN_ANN_FILE = f'{root_dir}/datasets/batch4/collection/cocoplus_dataset_mapped.json'
-    TRAIN_IMG_DIR = f'{root_dir}/datasets/batch4/images'
-    VAL_ANN_FILE = f'{root_dir}/datasets/batch120/collection/cocoplus_dataset_mapped.json'
-    VAL_IMG_DIR = f'{root_dir}/datasets/batch120/images'
+    TRAIN_ANN_FILE = f'{root_dir}/datasets/damage_annotations_march25/train_annotations.json'
+    TRAIN_IMG_DIR = f'{root_dir}/datasets/damage_annotations_march25'
+    VAL_ANN_FILE = f'{root_dir}/datasets/damage_annotations_march25/val_annotations.json'
+    VAL_IMG_DIR = f'{root_dir}/datasets/damage_annotations_march25'
 
     with open(TRAIN_ANN_FILE, "r") as r:
         thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
@@ -275,21 +275,23 @@ def setup(args):
 
     iters2epoch = math.floor(len(DatasetCatalog.get("vehicle_train")) / (cfg.SOLVER.IMS_PER_BATCH * args.num_gpus))
     max_iter = cfg.SOLVER.MAX_ITER * iters2epoch
+    warmup_iters = cfg.SOLVER.WARMUP_ITERS * iters2epoch
     steps = cfg.SOLVER.STEPS
 
     cfg.MODEL.YOLOF.DECODER.NUM_CLASSES = len(thing_classes)
+    cfg.MODEL.YOLOF.RETURN_VAL_LOSS = True
+
     cfg.DATASETS.TRAIN = ("vehicle_train",)
     cfg.DATASETS.TEST = ("vehicle_val",)
     cfg.SOLVER.MAX_ITER = max_iter
+    cfg.SOLVER.WARMUP_ITERS = warmup_iters
     cfg.SOLVER.IMS_PER_BATCH = 8
-    cfg.TEST.EVAL_PERIOD = 2500
-    cfg.MODEL.YOLOF.RETURN_VAL_LOSS = True
     cfg.OUTPUT_DIR = "./output"
 
     cfg.SOLVER.STEPS = tuple([int(max_iter * step) for step in steps])
     cfg.SOLVER.IMS_PER_BATCH = args.num_gpus * cfg.SOLVER.IMS_PER_BATCH
     cfg.SOLVER.CHECKPOINT_PERIOD = int(iters2epoch * cfg.SOLVER.CHECKPOINT_PERIOD) 
-    cfg.TEST.EVAL_PERIOD = int(iters2epoch * cfg.TEST.EVAL_PERIOD) 
+    cfg.TEST.EVAL_PERIOD = cfg.SOLVER.CHECKPOINT_PERIOD
 
     cfg.freeze()
     default_setup(cfg, args)
