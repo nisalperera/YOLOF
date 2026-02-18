@@ -75,7 +75,8 @@ class Trainer(DefaultTrainer):
     def __init__(self, cfg):
         super().__init__(cfg)
 
-        wandb.init(entity="nisalperera", project="Thesis", config=cfg, sync_tensorboard=True)
+        if comm.is_main_process():
+            wandb.init(entity="nisalperera", project="Thesis", config=cfg, sync_tensorboard=True)
 
     @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
