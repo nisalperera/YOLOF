@@ -16,7 +16,7 @@ from detectron2.engine.hooks import HookBase
 from detectron2.checkpoint import Checkpointer
 from detectron2.utils.logger import setup_logger
 from detectron2.engine.hooks import BestCheckpointer
-from detectron2.data.detection_utils import read_image
+from detectron2.data.detection_utils import read_image, annotations_to_instances
 from detectron2.utils.comm import is_main_process, synchronize
 
 from yolof.cam.gradcam import GradCAM
@@ -36,6 +36,8 @@ class GradCAMHook(HookBase):
         """
 
         self.cfg = cfg
+        self.grad_cam = None
+        self.eval_dataloader = []
         self.target_layer_name = target_layer_name
         self.eval_period = cfg.SOLVER.CHECKPOINT_PERIOD
         self.logger = setup_logger(output=cfg.OUTPUT_DIR, name="d2.yolof.grad_cam")
@@ -55,10 +57,14 @@ class GradCAMHook(HookBase):
         """
         Called after each training step to compute and log Grad-CAM visualizations.
         """
+
+        if self.grad_cam is None or self.eval_dataloader is None or len(self.eval_dataloader) == 0:
+            self.logger.error("Grad-CAM instance is not initialized or CAM dataloader is empty. Skipping CAM generation.")
+            return
         
         for image_obj in self.eval_dataloader:
             idx = image_obj["image_id"]
-            self.logger.info(f"Iteration: {self.trainer.iter}, Generating CAM for Image: id-{idx}")
+            self.logger.info(f"Generating CAM for Image: id-{idx}")
 
             filename = image_obj["file_name"]
             
@@ -68,8 +74,7 @@ class GradCAMHook(HookBase):
                 "image": input_tensor,
                 "height": image_height,
                 "width": image_width,
-                "annotations": image_obj.get("annotations", []),
-                "instances": None,  # No instances for Grad-CAM
+                "instances": annotations_to_instances(image_obj["annotations"], image_height, image_width),
             }
 
             output = self.grad_cam(input_dict)["instances"]
@@ -198,7 +203,7 @@ class GradCAMHook(HookBase):
         synchronize()
         # do the last eval in after_train
         if is_main_process():
-            self.logger.info(f"Trainig Completed: Starting to generate CAM on {len(self.eval_dataloader)} images...")
+            self.logger.info(f"Training Completed: Starting to generate CAM on {len(self.eval_dataloader)} images for last checkpoint...")
 
             # Initialize Grad-CAM instance
             self._initiate_grad_cam()

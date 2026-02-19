@@ -324,7 +324,7 @@ class YOLOF(nn.Module):
                 for i, x in enumerate(batched_inputs):
                     if not isinstance(x["instances"], Instances):
                         image_size = images.image_sizes[i]
-                        gt_instances.append(annotations_to_instances(x["annotations"], image_size).to(self.device))
+                        gt_instances.append(annotations_to_instances(x["instances"], image_size).to(self.device))
                     else:
                         gt_instances.append(x["instances"].to(self.device))
 
