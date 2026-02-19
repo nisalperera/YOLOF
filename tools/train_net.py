@@ -247,6 +247,7 @@ def setup(args):
     Create configs and perform basic setups.
     """
 
+    logger = logging.getLogger("detectron2.setup")
     # root_dir = Path(__file__).resolve().parents[1]
 
     # Define paths for your datasets (assuming they were created in previous steps)
@@ -258,16 +259,14 @@ def setup(args):
     with open(TRAIN_ANN_FILE, "r") as r:
         thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
 
-    print("Paths and categories defined.")
-
     register_coco_instances("vehicle_train", {}, TRAIN_ANN_FILE, TRAIN_IMG_DIR)
     register_coco_instances("vehicle_val", {}, VAL_ANN_FILE, VAL_IMG_DIR)
 
     MetadataCatalog.get("vehicle_train").set(thing_classes=thing_classes)
     MetadataCatalog.get("vehicle_val").set(thing_classes=thing_classes)
 
-    print("Datasets registered successfully!")
-    print("Available datasets:", DatasetCatalog.list())
+    logger.info("Datasets registered successfully!")
+    logger.info("Available datasets: {}".format(DatasetCatalog.list()))
 
     cfg = get_cfg()
     cfg.set_new_allowed(True)
@@ -291,6 +290,7 @@ def setup(args):
 
     cfg.SOLVER.STEPS = tuple([int(max_iter * step) for step in steps])
     cfg.SOLVER.IMS_PER_BATCH = args.num_gpus * cfg.SOLVER.IMS_PER_BATCH
+    # cfg.SOLVER.BASE_LR = cfg.SOLVER.BASE_LR * args.num_gpus
     cfg.SOLVER.CHECKPOINT_PERIOD = int(iters2epoch * cfg.SOLVER.CHECKPOINT_PERIOD) 
     cfg.TEST.EVAL_PERIOD = cfg.SOLVER.CHECKPOINT_PERIOD
 
@@ -329,7 +329,7 @@ def main(args):
 
     # Change the layer of your choice
     trainer.register_hooks([
-        GradCAMHook("decoder.cls_subnet", cfg=cfg),
+        # GradCAMHook("decoder.cls_subnet", cfg=cfg),
         hooks.PeriodicCheckpointer(YOLOFCheckpointer(trainer.model, cfg.OUTPUT_DIR, save_to_disk=True), cfg.SOLVER.CHECKPOINT_PERIOD, trainer.max_iter)
     ])
 
