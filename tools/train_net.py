@@ -241,6 +241,14 @@ class Trainer(DefaultTrainer):
             finally:
                 self.after_train()
 
+    def resume_or_load(self, resume=False):
+        checkpoints = self.checkpointer.resume_or_load(self.cfg.MODEL.WEIGHTS, resume=resume)
+        if resume and self.checkpointer.has_checkpoint():
+            # The checkpoint stores the training iteration that just finished, thus we start
+            # at the next iteration
+            self.iter = checkpoints.get("iteration", 0)
+            self.start_iter = self.iter + 1
+
 
 def setup(args):
     """
