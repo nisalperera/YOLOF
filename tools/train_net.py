@@ -88,7 +88,7 @@ class Trainer(DefaultTrainer):
                 entity="nisalperera", 
                 project="Thesis",
                 id=wandb_latest["run_id"] if wandb_latest["run_id"] else None,
-                config=to_dict(cfg), 
+                config=to_dict(cfg),
                 dir=cfg.OUTPUT_DIR)
             
         super().__init__(cfg)
@@ -393,3 +393,9 @@ if __name__ == "__main__":
         dist_url=args.dist_url,
         args=(args,),
     )
+
+
+# python3 ./train_net.py --num-gpus 1 --config-file /kaggle/working/yolof_R_50_DC5_1x.yaml DATALOADER.NUM_WORKERS 4 DATALOADER.SAMPLER_TRAIN "RepeatFactorTrainingSampler" DATALOADER.REPEAT_THRESHOLD 0.05 SOLVER.IMS_PER_BATCH 8 SOLVER.WARMUP_ITERS 330 SOLVER.BASE_LR 0.01 SOLVER.MAX_ITER 33750 SOLVER.STEPS '(26250, 31250)' SOLVER.CHECKPOINT_PERIOD 3375 TEST.EVAL_PERIOD 3375
+
+
+# # MODEL.WEIGHTS /kaggle/input/models/nisalchperera/yolof-resnet-50/pytorch/default/4/YOLOF_R50_DC5_1x.pth \
