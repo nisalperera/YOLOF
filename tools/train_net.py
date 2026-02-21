@@ -54,10 +54,12 @@ from detectron2.data.datasets.coco import register_coco_instances
 from detectron2.utils.events import EventStorage
 from detectron2.modeling import GeneralizedRCNNWithTTA
 
-from yolof.checkpoint import YOLOFCheckpointer
-from yolof.config import get_cfg
+from yolof.config import get_cfg, to_dict
 from yolof.data import YOLOFDtasetMapper
 from yolof.checkpoint import YOLOFCheckpointer
+from yolof.checkpoint import YOLOFCheckpointer
+from yolof.utils.events import WANDBWriter
+from yolof.utils.wandb import get_latest_wandb_run
 from yolof.hooks import GradCAMHook, BestCheckpointerAPARF1, EarlyStoppingHook
 from yolof.evaluation.coco_ar_ap import COCOEvaluatorWithAPandAR
 from yolof.data.samplers import EvenlyDistributedInferenceSampler
@@ -73,10 +75,23 @@ class Trainer(DefaultTrainer):
     """
 
     def __init__(self, cfg):
-        super().__init__(cfg)
-
         if comm.is_main_process():
-            wandb.init(entity="nisalperera", project="Thesis", config=cfg, sync_tensorboard=True)
+
+            if not isinstance(to_dict(cfg), dict):
+                raise ValueError("Expected cfg to be a dict, but got {}".format(type(cfg)))
+            
+            if os.getenv("WANDB_RESUME", "never") in ("must", "allow"):
+                wandb_latest = get_latest_wandb_run(os.path.join(cfg.OUTPUT_DIR, "wandb"))
+            else:
+                wandb_latest = {"run_id": None}
+            wandb.init(
+                entity="nisalperera", 
+                project="Thesis",
+                id=wandb_latest["run_id"] if wandb_latest["run_id"] else None,
+                config=to_dict(cfg), 
+                dir=cfg.OUTPUT_DIR)
+            
+        super().__init__(cfg)
 
     @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
@@ -146,7 +161,10 @@ class Trainer(DefaultTrainer):
             mapper = YOLOFDtasetMapper(cfg, False)
         else:
             mapper = None
-        return build_detection_test_loader(cfg, dataset_name, mapper=mapper)
+        
+        dataset_size = len(DatasetCatalog.get(dataset_name))  # Ensure the dataset is registered
+        return build_detection_test_loader(cfg, dataset_name, mapper=mapper, sampler=EvenlyDistributedInferenceSampler(dataset_size))
+
 
     @classmethod
     def build_optimizer(cls, cfg, model):
@@ -256,22 +274,32 @@ def setup(args):
     """
 
     logger = logging.getLogger("detectron2.setup")
-    # root_dir = Path(__file__).resolve().parents[1]
+    root_dir = Path(__file__).resolve().parents[1]
 
     # Define paths for your datasets (assuming they were created in previous steps)
-    TRAIN_ANN_FILE = f'/kaggle/input/2017-2017/annotations_trainval2017/annotations/instances_train2017.json'
-    TRAIN_IMG_DIR = f'/kaggle/input/2017-2017/train2017/train2017'
-    VAL_ANN_FILE = f'/kaggle/input/2017-2017/annotations_trainval2017/annotations/instances_val2017.json'
-    VAL_IMG_DIR = f'/kaggle/input/2017-2017/val2017/val2017'
+    # TRAIN_ANN_FILE = '/kaggle/input/2017-2017/annotations_trainval2017/annotations/instances_train2017.json'
+    # TRAIN_IMG_DIR = '/kaggle/input/2017-2017/train2017/train2017'
+    # VAL_ANN_FILE = '/kaggle/input/2017-2017/annotations_trainval2017/annotations/instances_val2017.json'
+    # VAL_IMG_DIR = '/kaggle/input/2017-2017/val2017/val2017'
+
+    # TRAIN_ANN_FILE = f'{root_dir}/datasets/damage_annotations_march25/train_annotations.json'
+    # TRAIN_IMG_DIR = f'{root_dir}/datasets/damage_annotations_march25'
+    # VAL_ANN_FILE = f'{root_dir}/datasets/damage_annotations_march25/val_annotations.json'
+    # VAL_IMG_DIR = f'{root_dir}/datasets/damage_annotations_march25'
+
+    TRAIN_ANN_FILE = '/home/nisalperera/YOLOF/datasets/coco2017/annotations/annotations/instances_train2017.json'
+    TRAIN_IMG_DIR = '/home/nisalperera/YOLOF/datasets/coco2017/images/train2017'
+    VAL_ANN_FILE = '/home/nisalperera/YOLOF/datasets/coco2017/annotations/annotations/instances_val2017.json'
+    VAL_IMG_DIR = '/home/nisalperera/YOLOF/datasets/coco2017/images/val2017'
 
     with open(TRAIN_ANN_FILE, "r") as r:
         thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
 
-    register_coco_instances("vehicle_train", {}, TRAIN_ANN_FILE, TRAIN_IMG_DIR)
-    register_coco_instances("vehicle_val", {}, VAL_ANN_FILE, VAL_IMG_DIR)
+    register_coco_instances("coco2017_train", {}, TRAIN_ANN_FILE, TRAIN_IMG_DIR)
+    register_coco_instances("coco2017_val", {}, VAL_ANN_FILE, VAL_IMG_DIR)
 
-    MetadataCatalog.get("vehicle_train").set(thing_classes=thing_classes)
-    MetadataCatalog.get("vehicle_val").set(thing_classes=thing_classes)
+    MetadataCatalog.get("coco2017_train").set(thing_classes=thing_classes)
+    MetadataCatalog.get("coco2017_val").set(thing_classes=thing_classes)
 
     logger.info("Datasets registered successfully!")
     logger.info("Available datasets: {}".format(DatasetCatalog.list()))
@@ -281,7 +309,7 @@ def setup(args):
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
 
-    # iters2epoch = math.floor(len(DatasetCatalog.get("vehicle_train")) / (cfg.SOLVER.IMS_PER_BATCH * args.num_gpus))
+    # iters2epoch = math.floor(len(DatasetCatalog.get("coco2017_train")) / (cfg.SOLVER.IMS_PER_BATCH * args.num_gpus))
     # max_iter = cfg.SOLVER.MAX_ITER * iters2epoch
     # warmup_iters = cfg.SOLVER.WARMUP_ITERS * iters2epoch
     # steps = cfg.SOLVER.STEPS
@@ -289,12 +317,12 @@ def setup(args):
     cfg.MODEL.YOLOF.DECODER.NUM_CLASSES = len(thing_classes)
     cfg.MODEL.YOLOF.RETURN_VAL_LOSS = True
 
-    cfg.DATASETS.TRAIN = ("vehicle_train",)
-    cfg.DATASETS.TEST = ("vehicle_val",)
+    cfg.DATASETS.TRAIN = ("coco2017_train",)
+    cfg.DATASETS.TEST = ("coco2017_val",)
     # cfg.SOLVER.MAX_ITER = max_iter
     # cfg.SOLVER.WARMUP_ITERS = warmup_iters
     # cfg.SOLVER.IMS_PER_BATCH = 8
-    cfg.OUTPUT_DIR = "./output"
+    cfg.OUTPUT_DIR = "./output/baseline_yolof_coco2017"
 
     # cfg.SOLVER.STEPS = tuple([int(max_iter * step) for step in steps])
     # cfg.SOLVER.IMS_PER_BATCH = args.num_gpus * cfg.SOLVER.IMS_PER_BATCH
@@ -308,6 +336,10 @@ def setup(args):
 
 
 def main(args):
+
+    if args.resume:
+        os.environ["WANDB_RESUME"] = "must"
+
     cfg = setup(args)
 
     if args.eval_only:
@@ -340,6 +372,10 @@ def main(args):
         # GradCAMHook("decoder.cls_subnet", cfg=cfg),
         hooks.PeriodicCheckpointer(YOLOFCheckpointer(trainer.model, cfg.OUTPUT_DIR, save_to_disk=True), cfg.SOLVER.CHECKPOINT_PERIOD, trainer.max_iter)
     ])
+
+    for hook in trainer._hooks:
+        if isinstance(hook, hooks.PeriodicWriter) and comm.is_main_process():
+            hook._writers.insert(-2, WANDBWriter(cfg.OUTPUT_DIR, project="Thesis"))
 
     return trainer.train()
 
