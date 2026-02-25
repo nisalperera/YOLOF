@@ -9,7 +9,7 @@ from .transform import (
     HFlipTransform,
     VFlipTransform,
     ResizeTransform,
-    YOLOFShiftTransform
+    YOLOFShiftTransform,
 )
 
 __all__ = [
@@ -17,7 +17,7 @@ __all__ = [
     "YOLOFResize",
     "YOLOFRandomDistortion",
     "RandomFlip",
-    "YOLOFRandomShift"
+    "YOLOFRandomShift",
 ]
 
 
@@ -40,14 +40,18 @@ class YOLOFJitterCrop(Augmentation):
         swidth = ow - pleft - pright
         sheight = oh - ptop - pbot
         return YOLOFJitterCropTransform(
-            pleft=pleft, pright=pright, ptop=ptop, pbot=pbot,
-            output_size=(swidth, sheight))
+            pleft=pleft,
+            pright=pright,
+            ptop=ptop,
+            pbot=pbot,
+            output_size=(swidth, sheight),
+        )
 
 
 class YOLOFResize(Augmentation):
     """
-        Resize image to a target size
-        """
+    Resize image to a target size
+    """
 
     def __init__(self, shape, interp=Image.BILINEAR, scale_jitter=None):
         """
@@ -58,8 +62,10 @@ class YOLOFResize(Augmentation):
         """
         if isinstance(shape, int):
             shape = (shape, shape)
+        elif (isinstance(shape, tuple) and len(shape) == 1):
+            shape = (shape[0], shape[0])
         shape = tuple(shape)
-        assert (scale_jitter is None or isinstance(scale_jitter, tuple))
+        assert scale_jitter is None or isinstance(scale_jitter, tuple)
         self._init(locals())
 
     def get_transform(self, image):
@@ -69,11 +75,8 @@ class YOLOFResize(Augmentation):
                 idx = np.random.choice(range(len(self.scale_jitter)))
                 shape = self.scale_jitter[idx]
             else:
-                jitter = np.random.uniform(self.scale_jitter[0],
-                                           self.scale_jitter[1])
-                shape = (
-                    int(self.shape[0] * jitter), int(self.shape[1] * jitter)
-                )
+                jitter = np.random.uniform(self.scale_jitter[0], self.scale_jitter[1])
+                shape = (int(self.shape[0] * jitter), int(self.shape[1] * jitter))
         else:
             shape = self.shape
         return ResizeTransform(
@@ -117,7 +120,8 @@ class RandomFlip(Augmentation):
 
         if horizontal and vertical:
             raise ValueError(
-                "Cannot do both horiz and vert. Please use two Flip instead.")
+                "Cannot do both horiz and vert. Please use two Flip instead."
+            )
         if not horizontal and not vertical:
             raise ValueError("At least one of horiz or vert has to be True!")
         self._init(locals())
@@ -151,10 +155,8 @@ class YOLOFRandomShift(Augmentation):
     def get_transform(self, *args):
         do = self._rand_range() < self.prob
         if do:
-            shift_x = np.random.randint(low=-self.max_shifts,
-                                        high=self.max_shifts)
-            shift_y = np.random.randint(low=-self.max_shifts,
-                                        high=self.max_shifts)
+            shift_x = np.random.randint(low=-self.max_shifts, high=self.max_shifts)
+            shift_y = np.random.randint(low=-self.max_shifts, high=self.max_shifts)
             return YOLOFShiftTransform(shift_x, shift_y)
         else:
             return NoOpTransform()

@@ -1,10 +1,9 @@
 from typing import List
 
-from fvcore.nn import c2_xavier_fill
 import torch
 import torch.nn as nn
-
 from detectron2.layers import ShapeSpec
+from fvcore.nn import c2_xavier_fill
 
 from .utils import get_activation, get_norm
 
@@ -30,6 +29,7 @@ class DilatedEncoder(nn.Module):
         self.block_dilations = cfg.MODEL.YOLOF.ENCODER.BLOCK_DILATIONS
         self.norm_type = cfg.MODEL.YOLOF.ENCODER.NORM
         self.act_type = cfg.MODEL.YOLOF.ENCODER.ACTIVATION
+        self.use_se = cfg.MODEL.YOLOF.ENCODER.USE_SE
         # fmt: on
         assert input_shape[self.backbone_level].channels == self.in_channels
         assert len(self.block_dilations) == self.num_residual_blocks
@@ -39,14 +39,13 @@ class DilatedEncoder(nn.Module):
         self._init_weight()
 
     def _init_layers(self):
-        self.lateral_conv = nn.Conv2d(self.in_channels,
-                                      self.encoder_channels,
-                                      kernel_size=1)
+        self.lateral_conv = nn.Conv2d(
+            self.in_channels, self.encoder_channels, kernel_size=1
+        )
         self.lateral_norm = get_norm(self.norm_type, self.encoder_channels)
-        self.fpn_conv = nn.Conv2d(self.encoder_channels,
-                                  self.encoder_channels,
-                                  kernel_size=3,
-                                  padding=1)
+        self.fpn_conv = nn.Conv2d(
+            self.encoder_channels, self.encoder_channels, kernel_size=3, padding=1
+        )
         self.fpn_norm = get_norm(self.norm_type, self.encoder_channels)
         encoder_blocks = []
         for i in range(self.num_residual_blocks):
@@ -57,7 +56,8 @@ class DilatedEncoder(nn.Module):
                     self.block_mid_channels,
                     dilation=dilation,
                     norm_type=self.norm_type,
-                    act_type=self.act_type
+                    act_type=self.act_type,
+                    use_se=self.use_se,
                 )
             )
         self.dilated_encoder_blocks = nn.Sequential(*encoder_blocks)
@@ -71,7 +71,7 @@ class DilatedEncoder(nn.Module):
         for m in self.dilated_encoder_blocks.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.normal_(m.weight, mean=0, std=0.01)
-                if hasattr(m, 'bias') and m.bias is not None:
+                if hasattr(m, "bias") and m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
             if isinstance(m, (nn.GroupNorm, nn.BatchNorm2d, nn.SyncBatchNorm)):
@@ -85,35 +85,73 @@ class DilatedEncoder(nn.Module):
 
 
 class Bottleneck(nn.Module):
-
-    def __init__(self,
-                 in_channels: int = 512,
-                 mid_channels: int = 128,
-                 dilation: int = 1,
-                 norm_type: str = 'BN',
-                 act_type: str = 'ReLU'):
+    def __init__(
+        self,
+        in_channels: int = 512,
+        mid_channels: int = 128,
+        dilation: int = 1,
+        norm_type: str = "BN",
+        act_type: str = "ReLU",
+        use_se: bool = False,
+    ):
         super(Bottleneck, self).__init__()
+        self.use_se = use_se
         self.conv1 = nn.Sequential(
             nn.Conv2d(in_channels, mid_channels, kernel_size=1, padding=0),
             get_norm(norm_type, mid_channels),
-            get_activation(act_type)
+            get_activation(act_type),
         )
+        if self.use_se:
+            self.se1 = SEBlock(mid_channels)
         self.conv2 = nn.Sequential(
-            nn.Conv2d(mid_channels, mid_channels,
-                      kernel_size=3, padding=dilation, dilation=dilation),
+            nn.Conv2d(
+                mid_channels,
+                mid_channels,
+                kernel_size=3,
+                padding=dilation,
+                dilation=dilation,
+            ),
             get_norm(norm_type, mid_channels),
-            get_activation(act_type)
+            get_activation(act_type),
         )
+        if self.use_se:
+            self.se2 = SEBlock(mid_channels)
         self.conv3 = nn.Sequential(
             nn.Conv2d(mid_channels, in_channels, kernel_size=1, padding=0),
             get_norm(norm_type, in_channels),
-            get_activation(act_type)
+            get_activation(act_type),
         )
+        if self.use_se:
+            self.se3 = SEBlock(in_channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         identity = x
         out = self.conv1(x)
+        if self.use_se:
+            out = self.se1(out)
         out = self.conv2(out)
+        if self.use_se:
+            out = self.se2(out)
         out = self.conv3(out)
+        if self.use_se:
+            out = self.se3(out)
         out = out + identity
         return out
+
+
+class SEBlock(nn.Module):
+    def __init__(self, channel, reduction=16):
+        super(SEBlock, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channel, channel // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channel // reduction, channel, bias=False),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y.expand_as(x)

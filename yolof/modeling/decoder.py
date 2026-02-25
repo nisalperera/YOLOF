@@ -29,6 +29,7 @@ class Decoder(nn.Module):
         self.norm_type = cfg.MODEL.YOLOF.DECODER.NORM
         self.act_type = cfg.MODEL.YOLOF.DECODER.ACTIVATION
         self.prior_prob = cfg.MODEL.YOLOF.DECODER.PRIOR_PROB
+        self.use_se = cfg.MODEL.YOLOF.DECODER.USE_SE
         # fmt: on
 
         self.INF = 1e8
@@ -41,45 +42,51 @@ class Decoder(nn.Module):
         bbox_subnet = []
         for i in range(self.cls_num_convs):
             cls_subnet.append(
-                nn.Conv2d(self.in_channels,
-                          self.in_channels,
-                          kernel_size=3,
-                          stride=1,
-                          padding=1))
+                nn.Conv2d(
+                    self.in_channels,
+                    self.in_channels,
+                    kernel_size=3,
+                    stride=1,
+                    padding=1,
+                )
+            )
             cls_subnet.append(get_norm(self.norm_type, self.in_channels))
             cls_subnet.append(get_activation(self.act_type))
+        if self.use_se:
+            cls_subnet.append(SEBlock(self.in_channels))
         for i in range(self.reg_num_convs):
             bbox_subnet.append(
-                nn.Conv2d(self.in_channels,
-                          self.in_channels,
-                          kernel_size=3,
-                          stride=1,
-                          padding=1))
+                nn.Conv2d(
+                    self.in_channels,
+                    self.in_channels,
+                    kernel_size=3,
+                    stride=1,
+                    padding=1,
+                )
+            )
             bbox_subnet.append(get_norm(self.norm_type, self.in_channels))
             bbox_subnet.append(get_activation(self.act_type))
         self.cls_subnet = nn.Sequential(*cls_subnet)
         self.bbox_subnet = nn.Sequential(*bbox_subnet)
-        self.cls_score = nn.Conv2d(self.in_channels,
-                                   self.num_anchors * self.num_classes,
-                                   kernel_size=3,
-                                   stride=1,
-                                   padding=1)
-        self.bbox_pred = nn.Conv2d(self.in_channels,
-                                   self.num_anchors * 4,
-                                   kernel_size=3,
-                                   stride=1,
-                                   padding=1)
-        self.object_pred = nn.Conv2d(self.in_channels,
-                                     self.num_anchors,
-                                     kernel_size=3,
-                                     stride=1,
-                                     padding=1)
+        self.cls_score = nn.Conv2d(
+            self.in_channels,
+            self.num_anchors * self.num_classes,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+        )
+        self.bbox_pred = nn.Conv2d(
+            self.in_channels, self.num_anchors * 4, kernel_size=3, stride=1, padding=1
+        )
+        self.object_pred = nn.Conv2d(
+            self.in_channels, self.num_anchors, kernel_size=3, stride=1, padding=1
+        )
 
     def _init_weight(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.normal_(m.weight, mean=0, std=0.01)
-                if hasattr(m, 'bias') and m.bias is not None:
+                if hasattr(m, "bias") and m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
             if isinstance(m, (nn.GroupNorm, nn.BatchNorm2d, nn.SyncBatchNorm)):
@@ -90,8 +97,7 @@ class Decoder(nn.Module):
         bias_value = -math.log((1 - self.prior_prob) / self.prior_prob)
         torch.nn.init.constant_(self.cls_score.bias, bias_value)
 
-    def forward(self,
-                feature: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, feature: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         cls_score = self.cls_score(self.cls_subnet(feature))
         N, _, H, W = cls_score.shape
         cls_score = cls_score.view(N, -1, self.num_classes, H, W)
@@ -102,8 +108,32 @@ class Decoder(nn.Module):
 
         # implicit objectness
         objectness = objectness.view(N, -1, 1, H, W)
-        normalized_cls_score = cls_score + objectness - torch.log(
-            1. + torch.clamp(cls_score.exp(), max=self.INF) + torch.clamp(
-                objectness.exp(), max=self.INF))
+        normalized_cls_score = (
+            cls_score
+            + objectness
+            - torch.log(
+                1.0
+                + torch.clamp(cls_score.exp(), max=self.INF)
+                + torch.clamp(objectness.exp(), max=self.INF)
+            )
+        )
         normalized_cls_score = normalized_cls_score.view(N, -1, H, W)
         return normalized_cls_score, bbox_reg
+
+
+class SEBlock(nn.Module):
+    def __init__(self, channel, reduction=16):
+        super(SEBlock, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channel, channel // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channel // reduction, channel, bias=False),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y.expand_as(x)

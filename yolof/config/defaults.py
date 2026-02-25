@@ -1,11 +1,11 @@
-from detectron2.config.defaults import _C
 from detectron2.config import CfgNode as CN
+from detectron2.config.defaults import _C
 
 # -----------------------------------------------------------------------------
 # Solver
 # -----------------------------------------------------------------------------
 _C.SOLVER.BACKBONE_MULTIPLIER = 0.334
-_C.SOLVER.WEIGHT_DECAY_NORM = 0.
+_C.SOLVER.WEIGHT_DECAY_NORM = 0.0
 
 # -----------------------------------------------------------------------------
 # JitterCrop Transformation
@@ -36,6 +36,7 @@ _C.INPUT.DISTORTION.EXPOSURE = 1.5
 # Shift Transformation
 # -----------------------------------------------------------------------------
 _C.INPUT.SHIFT = CN()
+_C.INPUT.SHIFT.ENABLED = True
 _C.INPUT.SHIFT.SHIFT_PIXELS = 32
 
 # -----------------------------------------------------------------------------
@@ -83,6 +84,8 @@ _C.MODEL.YOLOF.ENCODER.NUM_RESIDUAL_BLOCKS = 4
 _C.MODEL.YOLOF.ENCODER.BLOCK_DILATIONS = [2, 4, 6, 8]
 _C.MODEL.YOLOF.ENCODER.NORM = "BN"
 _C.MODEL.YOLOF.ENCODER.ACTIVATION = "ReLU"
+_C.MODEL.YOLOF.ENCODER.USE_SE = False
+_C.MODEL.YOLOF.ENCODER.DROPOUT_RATE = 0.0
 
 # YOLOF Decoder parameters
 _C.MODEL.YOLOF.DECODER = CN()
@@ -94,6 +97,7 @@ _C.MODEL.YOLOF.DECODER.REG_NUM_CONVS = 4
 _C.MODEL.YOLOF.DECODER.NORM = "BN"
 _C.MODEL.YOLOF.DECODER.ACTIVATION = "ReLU"
 _C.MODEL.YOLOF.DECODER.PRIOR_PROB = 0.01
+_C.MODEL.YOLOF.DECODER.USE_SE = False
 
 # YOLOF box2box transform
 _C.MODEL.YOLOF.BOX_TRANSFORM = CN()
@@ -113,9 +117,11 @@ _C.MODEL.YOLOF.LOSSES = CN()
 _C.MODEL.YOLOF.LOSSES.FOCAL_LOSS_GAMMA = 2.0
 _C.MODEL.YOLOF.LOSSES.FOCAL_LOSS_ALPHA = 0.25
 _C.MODEL.YOLOF.LOSSES.BBOX_REG_LOSS_TYPE = "giou"
+_C.MODEL.YOLOF.RETURN_VAL_LOSS = True
 
 # YOLOF test
 _C.MODEL.YOLOF.SCORE_THRESH_TEST = 0.05
 _C.MODEL.YOLOF.TOPK_CANDIDATES_TEST = 1000
 _C.MODEL.YOLOF.NMS_THRESH_TEST = 0.6
 _C.MODEL.YOLOF.DETECTIONS_PER_IMAGE = 100
+_C.MULTI_OUTPUT = False

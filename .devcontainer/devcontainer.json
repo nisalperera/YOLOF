@@ -1,0 +1,41 @@
+{
+  "name": "YOLOF",
+  "build": {
+    "context": "${localWorkspaceFolder}",
+    "dockerfile": "${localWorkspaceFolder}/docker/Dockerfile",
+    "args": {
+      "UID": "${localEnv:UID:1000}",
+      "GID": "${localEnv:GID:1000}",
+      "USER": "${localEnv:USER:ubuntu}"
+    }
+  },
+  "workspaceFolder": "/home/${localEnv:USER:ubuntu}/YOLOF",
+  "remoteUser": "${localEnv:USER:ubuntu}",
+  "containerEnv": {
+    "HOME": "/home/${localEnv:USER:ubuntu}",
+    "USER": "${localEnv:USER:ubuntu}"
+  },
+  "runArgs": [
+    "--network=host",
+    "--ipc=host",
+    "--gpus=all",
+    "--env-file=${localWorkspaceFolder}/.env",
+    "--name=YOLOF"
+  ],
+  "mounts": [
+    "source=${localEnv:HOME}/Projects/personal/data/,target=/home/${localEnv:USER:ubuntu}/YOLOF/datasets/,type=bind"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python@2025.14.0",
+        "ms-toolsai.jupyter@2025.6.0",
+        "ms-python.debugpy@2025.10.0",
+        "njpwerner.autodocstring@0.6.1"
+      ]
+    }
+  },
+  "remoteEnv": {
+    "DOCKER_BUILDKIT": "0"
+  }
+}

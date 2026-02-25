@@ -5,8 +5,7 @@ from torch import nn
 
 def box_xyxy_to_cxcywh(x):
     x0, y0, x1, y1 = x.unbind(-1)
-    b = [(x0 + x1) / 2, (y0 + y1) / 2,
-         (x1 - x0), (y1 - y0)]
+    b = [(x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0), (y1 - y0)]
     return torch.stack(b, dim=-1)
 
 
@@ -47,9 +46,11 @@ class UniformMatcher(nn.Module):
         # Compute the L1 cost between boxes
         # Note that we use anchors and predict boxes both
         cost_bbox = torch.cdist(
-            box_xyxy_to_cxcywh(out_bbox), box_xyxy_to_cxcywh(tgt_bbox), p=1)
+            box_xyxy_to_cxcywh(out_bbox), box_xyxy_to_cxcywh(tgt_bbox), p=1
+        )
         cost_bbox_anchors = torch.cdist(
-            box_xyxy_to_cxcywh(anchors), box_xyxy_to_cxcywh(tgt_bbox), p=1)
+            box_xyxy_to_cxcywh(anchors), box_xyxy_to_cxcywh(tgt_bbox), p=1
+        )
 
         # Final cost matrix
         C = cost_bbox
@@ -62,30 +63,25 @@ class UniformMatcher(nn.Module):
         # positive indices when matching predict boxes and gt boxes
         indices = [
             tuple(
-                torch.topk(
-                    c[i],
-                    k=self.match_times,
-                    dim=0,
-                    largest=False)[1].numpy().tolist()
+                torch.topk(c[i], k=self.match_times, dim=0, largest=False)[1]
+                .numpy()
+                .tolist()
             )
             for i, c in enumerate(C.split(sizes, -1))
         ]
         # positive indices when matching anchor boxes and gt boxes
         indices1 = [
             tuple(
-                torch.topk(
-                    c[i],
-                    k=self.match_times,
-                    dim=0,
-                    largest=False)[1].numpy().tolist())
-            for i, c in enumerate(C1.split(sizes, -1))]
+                torch.topk(c[i], k=self.match_times, dim=0, largest=False)[1]
+                .numpy()
+                .tolist()
+            )
+            for i, c in enumerate(C1.split(sizes, -1))
+        ]
 
         # concat the indices according to image ids
         for img_id, (idx, idx1) in enumerate(zip(indices, indices1)):
-            img_idx_i = [
-                np.array(idx_ + idx1_)
-                for (idx_, idx1_) in zip(idx, idx1)
-            ]
+            img_idx_i = [np.array(idx_ + idx1_) for (idx_, idx1_) in zip(idx, idx1)]
             img_idx_j = [
                 np.array(list(range(len(idx_))) + list(range(len(idx1_))))
                 for (idx_, idx1_) in zip(idx, idx1)
@@ -105,7 +101,9 @@ class UniformMatcher(nn.Module):
             all_idx_j = np.hstack(all_idx_j)
             all_indices.append((all_idx_i, all_idx_j))
         return [
-            (torch.as_tensor(i, dtype=torch.int64),
-             torch.as_tensor(j, dtype=torch.int64))
+            (
+                torch.as_tensor(i, dtype=torch.int64),
+                torch.as_tensor(j, dtype=torch.int64),
+            )
             for i, j in all_indices
         ]

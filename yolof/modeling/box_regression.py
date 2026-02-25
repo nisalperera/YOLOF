@@ -18,11 +18,11 @@ class YOLOFBox2BoxTransform(object):
     """
 
     def __init__(
-            self,
-            weights: Tuple[float, float, float, float],
-            scale_clamp: float = _DEFAULT_SCALE_CLAMP,
-            add_ctr_clamp: bool = False,
-            ctr_clamp: int = 32
+        self,
+        weights: Tuple[float, float, float, float],
+        scale_clamp: float = _DEFAULT_SCALE_CLAMP,
+        add_ctr_clamp: bool = False,
+        ctr_clamp: int = 32,
     ):
         """
         Args:
@@ -76,8 +76,9 @@ class YOLOFBox2BoxTransform(object):
         dh = wh * torch.log(target_heights / src_heights)
 
         deltas = torch.stack((dx, dy, dw, dh), dim=-1)
-        assert (src_widths > 0).all().item(), \
-            "Input boxes to Box2BoxTransform are not valid!"
+        assert (
+            (src_widths > 0).all().item()
+        ), "Input boxes to Box2BoxTransform are not valid!"
         return deltas
 
     def apply_deltas(self, deltas, boxes):
@@ -108,12 +109,8 @@ class YOLOFBox2BoxTransform(object):
         dx_width = dx * widths[..., None]
         dy_height = dy * heights[..., None]
         if self.add_ctr_clamp:
-            dx_width = torch.clamp(dx_width,
-                                   max=self.ctr_clamp,
-                                   min=-self.ctr_clamp)
-            dy_height = torch.clamp(dy_height,
-                                    max=self.ctr_clamp,
-                                    min=-self.ctr_clamp)
+            dx_width = torch.clamp(dx_width, max=self.ctr_clamp, min=-self.ctr_clamp)
+            dy_height = torch.clamp(dy_height, max=self.ctr_clamp, min=-self.ctr_clamp)
         dw = torch.clamp(dw, max=self.scale_clamp)
         dh = torch.clamp(dh, max=self.scale_clamp)
 

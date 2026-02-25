@@ -8,7 +8,7 @@ from .augmentation_impl import (
     YOLOFResize,
     YOLOFRandomDistortion,
     RandomFlip,
-    YOLOFRandomShift
+    YOLOFRandomShift,
 )
 
 
@@ -25,9 +25,8 @@ def build_augmentation(cfg, is_train):
         augmentation = build_normal_augmentation(cfg, is_train)
     else:
         augmentation = build_yolo_augmentation(cfg, is_train)
-    if is_train:
-        augmentation.append(
-            YOLOFRandomShift(max_shifts=cfg.INPUT.SHIFT.SHIFT_PIXELS))
+    if is_train and cfg.INPUT.SHIFT.ENABLED:
+        augmentation.append(YOLOFRandomShift(max_shifts=cfg.INPUT.SHIFT.SHIFT_PIXELS))
     return augmentation
 
 
@@ -36,6 +35,7 @@ def build_normal_augmentation(cfg, is_train):
     Train Augmentations:
         - ResizeShortestEdge
         - RandomFlip (not for test)
+        - Optional: YOLOFRandomDistortion (even if RESIZE is False)
     Test:
         - ResizeShortestEdge
     """
@@ -48,6 +48,18 @@ def build_normal_augmentation(cfg, is_train):
         max_size = cfg.INPUT.MAX_SIZE_TEST
         sample_style = "choice"
     augmentation = [T.ResizeShortestEdge(min_size, max_size, sample_style)]
+
+    # Add color distortion (DISTORTION) even if RESIZE is disabled
+    if is_train and cfg.INPUT.DISTORTION.ENABLED:
+        from .augmentation_impl import YOLOFRandomDistortion
+        augmentation.append(
+            YOLOFRandomDistortion(
+                hue=cfg.INPUT.DISTORTION.HUE,
+                saturation=cfg.INPUT.DISTORTION.SATURATION,
+                exposure=cfg.INPUT.DISTORTION.EXPOSURE,
+            )
+        )
+        
     if is_train and cfg.INPUT.RANDOM_FLIP != "none":
         augmentation.append(
             T.RandomFlip(
@@ -71,18 +83,18 @@ def build_yolo_augmentation(cfg, is_train):
     augmentation = []
     if is_train:
         if cfg.INPUT.JITTER_CROP.ENABLED:
-            augmentation.append(YOLOFJitterCrop(
-                cfg.INPUT.JITTER_CROP.JITTER_RATIO))
+            augmentation.append(YOLOFJitterCrop(cfg.INPUT.JITTER_CROP.JITTER_RATIO))
         augmentation.append(
-            YOLOFResize(shape=cfg.INPUT.RESIZE.SHAPE,
-                        scale_jitter=cfg.INPUT.RESIZE.SCALE_JITTER)
+            YOLOFResize(
+                shape=cfg.INPUT.RESIZE.SHAPE, scale_jitter=cfg.INPUT.RESIZE.SCALE_JITTER
+            )
         )
         if cfg.INPUT.DISTORTION.ENABLED:
             augmentation.append(
                 YOLOFRandomDistortion(
                     hue=cfg.INPUT.DISTORTION.HUE,
                     saturation=cfg.INPUT.DISTORTION.SATURATION,
-                    exposure=cfg.INPUT.DISTORTION.EXPOSURE
+                    exposure=cfg.INPUT.DISTORTION.EXPOSURE,
                 )
             )
         if cfg.INPUT.RANDOM_FLIP != "none":
@@ -96,14 +108,13 @@ def build_yolo_augmentation(cfg, is_train):
             )
     else:
         augmentation.append(
-            YOLOFResize(shape=cfg.INPUT.RESIZE.TEST_SHAPE,
-                        scale_jitter=None)
+            YOLOFResize(shape=cfg.INPUT.RESIZE.TEST_SHAPE, scale_jitter=None)
         )
     return augmentation
 
 
 def transform_instance_annotations(
-        annotation, transforms, image_size, *, add_meta_infos=False
+    annotation, transforms, image_size, *, add_meta_infos=False
 ):
     """
     Apply transforms to box and meta_infos annotations of a single instance.
@@ -130,7 +141,8 @@ def transform_instance_annotations(
         transforms = T.TransformList(transforms)
     # bbox is 1d (per-instance bounding box)
     bbox = BoxMode.convert(
-        annotation["bbox"], annotation["bbox_mode"], BoxMode.XYXY_ABS)
+        annotation["bbox"], annotation["bbox_mode"], BoxMode.XYXY_ABS
+    )
     # clip transformed bbox to image size
     bbox = transforms.apply_box(np.array([bbox]))[0].clip(min=0)
     annotation["bbox"] = np.minimum(bbox, list(image_size + image_size)[::-1])
@@ -142,3 +154,4 @@ def transform_instance_annotations(
         meta_infos = transforms.apply_meta_infos(meta_infos)
         annotation["meta_infos"] = meta_infos
     return annotation
+ 
