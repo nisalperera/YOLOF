@@ -393,4 +393,4 @@ if __name__ == "__main__":
     )
 
 
-# python3 ./train_net.py --num-gpus 1 --config-file /kaggle/working/yolof_R_50_DC5_1x.yaml DATALOADER.NUM_WORKERS 4 DATALOADER.SAMPLER_TRAIN "RepeatFactorTrainingSampler" DATALOADER.REPEAT_THRESHOLD 0.05 SOLVER.IMS_PER_BATCH 8 SOLVER.WARMUP_ITERS 330 SOLVER.BASE_LR 0.01 SOLVER.MAX_ITER 33750 SOLVER.STEPS '(26250, 31250)' SOLVER.CHECKPOINT_PERIOD 3375 TEST.EVAL_PERIOD 3375 MODEL.WEIGHTS /kaggle/input/models/nisalchperera/yolof-resnet-50/pytorch/default/4/YOLOF_R50_DC5_1x.pth
+# python3 ./tools/train_net.py --num-gpus 1 --config-file configs/yolof_R_50_DC5_1x.yaml DATALOADER.NUM_WORKERS 4 DATALOADER.SAMPLER_TRAIN "RepeatFactorTrainingSampler" DATALOADER.REPEAT_THRESHOLD 0.05 SOLVER.IMS_PER_BATCH 8 SOLVER.WARMUP_ITERS 330 SOLVER.BASE_LR 0.01 SOLVER.MAX_ITER 33750 SOLVER.STEPS '(26250, 31250)' SOLVER.CHECKPOINT_PERIOD 3375 TEST.EVAL_PERIOD 3375 MODEL.WEIGHTS /kaggle/input/models/nisalchperera/yolof-resnet-50/pytorch/default/4/YOLOF_R50_DC5_1x.pth
