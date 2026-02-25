@@ -309,26 +309,24 @@ def setup(args):
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
 
-    # iters2epoch = math.floor(len(DatasetCatalog.get("coco2017_train")) / (cfg.SOLVER.IMS_PER_BATCH * args.num_gpus))
-    # max_iter = cfg.SOLVER.MAX_ITER * iters2epoch
-    # warmup_iters = cfg.SOLVER.WARMUP_ITERS * iters2epoch
-    # steps = cfg.SOLVER.STEPS
+    iters2epoch = math.floor(len(DatasetCatalog.get("coco2017_train")) / (cfg.SOLVER.IMS_PER_BATCH * args.num_gpus))
+    max_iter = cfg.SOLVER.MAX_ITER * iters2epoch
+    warmup_iters = cfg.SOLVER.WARMUP_ITERS * iters2epoch
+    steps = cfg.SOLVER.STEPS
 
     cfg.MODEL.YOLOF.DECODER.NUM_CLASSES = len(thing_classes)
     cfg.MODEL.YOLOF.RETURN_VAL_LOSS = True
 
     cfg.DATASETS.TRAIN = ("coco2017_train",)
     cfg.DATASETS.TEST = ("coco2017_val",)
-    # cfg.SOLVER.MAX_ITER = max_iter
-    # cfg.SOLVER.WARMUP_ITERS = warmup_iters
-    # cfg.SOLVER.IMS_PER_BATCH = 8
+    cfg.SOLVER.MAX_ITER = max_iter
+    cfg.SOLVER.WARMUP_ITERS = warmup_iters
     cfg.OUTPUT_DIR = "./output/baseline_yolof_coco2017"
 
-    # cfg.SOLVER.STEPS = tuple([int(max_iter * step) for step in steps])
-    # cfg.SOLVER.IMS_PER_BATCH = args.num_gpus * cfg.SOLVER.IMS_PER_BATCH
-    # cfg.SOLVER.BASE_LR = cfg.SOLVER.BASE_LR * args.num_gpus
-    # cfg.SOLVER.CHECKPOINT_PERIOD = int(iters2epoch * cfg.SOLVER.CHECKPOINT_PERIOD) 
-    # cfg.TEST.EVAL_PERIOD = cfg.SOLVER.CHECKPOINT_PERIOD
+    cfg.SOLVER.STEPS = tuple([int(max_iter * step) for step in steps])
+    cfg.SOLVER.IMS_PER_BATCH = args.num_gpus * cfg.SOLVER.IMS_PER_BATCH
+    cfg.SOLVER.CHECKPOINT_PERIOD = int(iters2epoch * cfg.SOLVER.CHECKPOINT_PERIOD) 
+    cfg.TEST.EVAL_PERIOD = cfg.SOLVER.CHECKPOINT_PERIOD
 
     cfg.freeze()
     default_setup(cfg, args)
@@ -395,7 +393,4 @@ if __name__ == "__main__":
     )
 
 
-# python3 ./train_net.py --num-gpus 1 --config-file /kaggle/working/yolof_R_50_DC5_1x.yaml DATALOADER.NUM_WORKERS 4 DATALOADER.SAMPLER_TRAIN "RepeatFactorTrainingSampler" DATALOADER.REPEAT_THRESHOLD 0.05 SOLVER.IMS_PER_BATCH 8 SOLVER.WARMUP_ITERS 330 SOLVER.BASE_LR 0.01 SOLVER.MAX_ITER 33750 SOLVER.STEPS '(26250, 31250)' SOLVER.CHECKPOINT_PERIOD 3375 TEST.EVAL_PERIOD 3375
-
-
-# # MODEL.WEIGHTS /kaggle/input/models/nisalchperera/yolof-resnet-50/pytorch/default/4/YOLOF_R50_DC5_1x.pth \
+# python3 ./train_net.py --num-gpus 1 --config-file /kaggle/working/yolof_R_50_DC5_1x.yaml DATALOADER.NUM_WORKERS 4 DATALOADER.SAMPLER_TRAIN "RepeatFactorTrainingSampler" DATALOADER.REPEAT_THRESHOLD 0.05 SOLVER.IMS_PER_BATCH 8 SOLVER.WARMUP_ITERS 330 SOLVER.BASE_LR 0.01 SOLVER.MAX_ITER 33750 SOLVER.STEPS '(26250, 31250)' SOLVER.CHECKPOINT_PERIOD 3375 TEST.EVAL_PERIOD 3375 MODEL.WEIGHTS /kaggle/input/models/nisalchperera/yolof-resnet-50/pytorch/default/4/YOLOF_R50_DC5_1x.pth

@@ -11,9 +11,11 @@ try:
 except ImportError:
     wndb_init = False
 
-from .wandb import get_latest_wandb_run
 from functools import cached_property
 from detectron2.utils.events import EventWriter, get_event_storage
+
+from yolof.config import get_cfg
+from .wandb import get_latest_wandb_run
 
 
 class WANDBWriter(EventWriter):
@@ -31,6 +33,7 @@ class WANDBWriter(EventWriter):
         self._window_size = window_size
         self._writer_args = {"dir": log_dir, **kwargs}
         self._last_write = -1
+        self._cfg = get_cfg()
 
     @cached_property
     def _writer(self):
@@ -61,6 +64,11 @@ class WANDBWriter(EventWriter):
             # Fallback init if no env vars
             return wandb.init(**self._writer_args)
 
+    def _is_eval_iter(self, iter: int) -> bool:
+        """Check if current iteration is evaluation (matches EvalHook)."""
+        eval_period = self._cfg.TEST.EVAL_PERIOD
+        return eval_period > 0 and ((iter + 1) % eval_period == 0 or iter == self._cfg.SOLVER.MAX_ITER - 1)
+
     def write(self):
 
         if self._writer is None:
@@ -69,13 +77,29 @@ class WANDBWriter(EventWriter):
         storage = get_event_storage()
         iter = storage.iter
         new_last_write = self._last_write
-        
+
+        latest = storage.latest() if self._window_size <= 0 else storage.latest_with_smoothing_hint(self._window_size)
+
+        # Separate training vs eval metrics
+        training_scalars = {}
+        eval_scalars = {}
+
         # Log all smoothed scalars (exact TensorBoardXWriter logic)
-        for k, (v, _) in storage.latest_with_smoothing_hint(self._window_size).items():
+        for k, (v, _) in latest.items():
             if iter > self._last_write:
-                self._writer.log({k: v}, step=iter)
-                new_last_write = max(new_last_write, iter)
-        
+
+                if self._is_eval_iter(iter) and ("val_loss_" in k or "bbox" in k):
+                    eval_scalars[k] = v
+                else:
+                    training_scalars[k] = v
+
+        if training_scalars:
+            self._writer.log(training_scalars, step=iter)
+            new_last_write = max(new_last_write, iter)
+
+        if eval_scalars:
+            self._writer.log(eval_scalars, step=iter)
+
         self._last_write = new_last_write
 
         # Log images from storage._vis_data (exact logic)
