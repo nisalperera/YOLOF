@@ -55,7 +55,7 @@ from detectron2.utils.events import EventStorage
 from detectron2.modeling import GeneralizedRCNNWithTTA
 
 from yolof.config import get_cfg, to_dict
-from yolof.data import YOLOFDtasetMapper
+from yolof.data import YOLOFDatasetMapper
 from yolof.checkpoint import YOLOFCheckpointer
 from yolof.checkpoint import YOLOFCheckpointer
 from yolof.utils.events import WANDBWriter
@@ -150,7 +150,7 @@ class Trainer(DefaultTrainer):
     @classmethod
     def build_train_loader(cls, cfg):
         if "YOLOF" == cfg.MODEL.META_ARCHITECTURE:
-            mapper = YOLOFDtasetMapper(cfg, True)
+            mapper = YOLOFDatasetMapper(cfg, True)
         else:
             mapper = None
         return build_detection_train_loader(cfg, mapper=mapper)
@@ -158,7 +158,7 @@ class Trainer(DefaultTrainer):
     @classmethod
     def build_test_loader(cls, cfg, dataset_name):
         if "YOLOF" == cfg.MODEL.META_ARCHITECTURE:
-            mapper = YOLOFDtasetMapper(cfg, False)
+            mapper = YOLOFDatasetMapper(cfg, False)
         else:
             mapper = None
         

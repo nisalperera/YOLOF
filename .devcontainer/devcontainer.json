@@ -23,7 +23,8 @@
     "--name=YOLOF"
   ],
   "mounts": [
-    "source=${localEnv:HOME}/Projects/personal/data/,target=/home/${localEnv:USER:ubuntu}/YOLOF/datasets/,type=bind"
+    "source=${localEnv:HOME}/Projects/personal/data/,target=/home/${localEnv:USER:ubuntu}/YOLOF/datasets/,type=bind",
+    "source=${localWorkspaceFolder}/output/,target=/home/${localEnv:USER:ubuntu}/YOLOF/output/,type=bind"
   ],
   "customizations": {
     "vscode": {

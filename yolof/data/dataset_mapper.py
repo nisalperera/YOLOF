@@ -16,7 +16,7 @@ from detectron2.structures import BoxMode
 from .detection_utils import build_augmentation, transform_instance_annotations
 
 
-class YOLOFDtasetMapper(DatasetMapper):
+class YOLOFDatasetMapper(DatasetMapper):
     """
     A callable which takes a dataset dict in Detectron2 Dataset format,
     and map it into a format used by YOLOF.

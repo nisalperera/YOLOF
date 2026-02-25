@@ -1,4 +1,4 @@
-from .dataset_mapper import YOLOFDtasetMapper
+from .dataset_mapper import YOLOFDatasetMapper
 from .samplers import EvenlyDistributedInferenceSampler
 
-__all__ = ["YOLOFDtasetMapper", "EvenlyDistributedInferenceSampler"]
+__all__ = ["YOLOFDatasetMapper", "EvenlyDistributedInferenceSampler"]
