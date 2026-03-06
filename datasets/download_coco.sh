@@ -13,7 +13,7 @@ BASE_URL="http://images.cocodataset.org"
 export DETECTRON2_DATASETS=${DETECTRON2_DATASETS:-./datasets}
 echo "DETECTRON2_DATASETS=$DETECTRON2_DATASETS"
 
-DATASET_ROOT="$DETECTRON2_DATASETS/coco"
+DATASET_ROOT="$DETECTRON2_DATASETS/coco2017"
 mkdir -p $DATASET_ROOT/{images/train2017,images/val2017,annotations}
 
 download_parallel() {
