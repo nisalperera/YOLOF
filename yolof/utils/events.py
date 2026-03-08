@@ -87,8 +87,8 @@ class WANDBWriter(EventWriter):
         # Log all smoothed scalars (exact TensorBoardXWriter logic)
         for k, (v, _) in latest.items():
             if iter > self._last_write:
-
-                if self._is_eval_iter(iter) and ("val_loss_" in k or "bbox" in k):
+                
+                if "val_loss_" in k or "bbox" in k:
                     eval_scalars[k] = v
                 else:
                     training_scalars[k] = v
