@@ -18,22 +18,26 @@ from yolof.config import get_cfg
 from .wandb import get_latest_wandb_run
 
 
-class WANDBWriter(EventWriter):
+class WandBWriter(EventWriter):
     """
     Write all scalars and images to Weights & Biases.
     """
 
-    def __init__(self, log_dir: str = None, window_size: int = 20, **kwargs):
+    def __init__(self, cfg, window_size: int = 20, **kwargs):
         """
         Args:
-            log_dir (str): ignored (W&B uses cloud); for compatibility
+            cfg: the configuration object
             window_size (int): the scalars will be median-smoothed by this window size before logging to W&B
             kwargs: ignored (passed to wandb.init if needed)
         """
         self._window_size = window_size
-        self._writer_args = {"dir": log_dir, **kwargs}
+        self._writer_args = {"dir": cfg.OUTPUT_DIR, **kwargs}
         self._last_write = -1
-        self._cfg = get_cfg()
+
+        if cfg is not None:
+            self._cfg = cfg # Use provided config if given
+        else:
+            self._cfg = get_cfg()
 
     @cached_property
     def _writer(self):
@@ -75,7 +79,8 @@ class WANDBWriter(EventWriter):
             return  # No writer available, skip logging
 
         storage = get_event_storage()
-        iter = storage.iter
+        _iter = storage.iter
+        _eval = self._is_eval_iter(_iter)  # Check if current iter is eval
         new_last_write = self._last_write
 
         latest = storage.latest() if self._window_size <= 0 else storage.latest_with_smoothing_hint(self._window_size)
@@ -86,19 +91,18 @@ class WANDBWriter(EventWriter):
 
         # Log all smoothed scalars (exact TensorBoardXWriter logic)
         for k, (v, _) in latest.items():
-            if iter > self._last_write:
-                
-                if "val_loss_" in k or "bbox" in k:
+            if _iter > self._last_write:
+                if _eval and ("val_loss_" in k or "bbox" in k):
                     eval_scalars[k] = v
                 else:
                     training_scalars[k] = v
 
         if training_scalars:
-            self._writer.log(training_scalars, step=iter)
-            new_last_write = max(new_last_write, iter)
+            self._writer.log(training_scalars, step=_iter)
+            new_last_write = max(new_last_write, _iter)
 
         if eval_scalars:
-            self._writer.log(eval_scalars, step=iter)
+            self._writer.log(eval_scalars, step=_iter)
 
         self._last_write = new_last_write
 
@@ -108,12 +112,12 @@ class WANDBWriter(EventWriter):
             for img_name, img, _ in storage._vis_data:
                 imgs.append(wandb.Image(img, caption=img_name))
             if imgs:
-                self._writer.log({"predictions": imgs}, step=iter)
+                self._writer.log({"predictions": imgs}, step=_iter)
 
         # Log histograms if any
         if len(storage._histograms) >= 1:
             for params in storage._histograms:
-                self._writer.log({"histogram": wandb.Histogram(params["data"])}, step=iter)
+                self._writer.log({"histogram": wandb.Histogram(params["data"])}, step=_iter)
 
     def close(self):
         if self._writer is None:

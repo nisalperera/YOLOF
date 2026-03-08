@@ -58,7 +58,7 @@ from yolof.config import get_cfg, to_dict
 from yolof.data import YOLOFDatasetMapper
 from yolof.checkpoint import YOLOFCheckpointer
 from yolof.checkpoint import YOLOFCheckpointer
-from yolof.utils.events import WANDBWriter
+from yolof.utils.events import WandBWriter
 from yolof.utils.wandb import get_latest_wandb_run
 from yolof.hooks import GradCAMHook, BestCheckpointerAPARF1, EarlyStoppingHook
 from yolof.evaluation.coco_ar_ap import COCOEvaluatorWithAPandAR
@@ -373,7 +373,7 @@ def main(args):
 
     for hook in trainer._hooks:
         if isinstance(hook, hooks.PeriodicWriter) and comm.is_main_process():
-            hook._writers.insert(-2, WANDBWriter(cfg.OUTPUT_DIR, project="Thesis"))
+            hook._writers.insert(-2, WandBWriter(cfg, project="Thesis"))
 
     return trainer.train()
 
