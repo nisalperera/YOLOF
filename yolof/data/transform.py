@@ -18,6 +18,13 @@ __all__ = [
     "VFlipTransform",
     "ResizeTransform",
     "YOLOFShiftTransform",
+    "ColorJitterTransform",
+    "EqualizeTransform",
+    "PosterizeTransform",
+    "SolarizeTransform",
+    "AutoContrastTransform",
+    "SharpnessTransform",
+    "SmallAngleRotateTransform",
 ]
 
 
@@ -319,3 +326,203 @@ class YOLOFShiftTransform(Transform):
             0, meta_infos["jitter_pad_bot"] + self.shift_y
         )
         return meta_infos
+
+
+# ============================================================================
+# New transforms for augmentation groups
+# ============================================================================
+
+
+class ColorJitterTransform(Transform):
+    """
+    PIL-style color jitter in RGB space.
+    Randomly adjusts brightness, contrast, saturation, and hue.
+    """
+
+    def __init__(self, brightness, contrast, saturation, hue):
+        """
+        Args:
+            brightness (float): factor sampled from [1-b, 1+b].
+            contrast (float): factor sampled from [1-c, 1+c].
+            saturation (float): factor sampled from [1-s, 1+s].
+            hue (float): shift sampled from [-h, h] (applied in HSV).
+        """
+        super().__init__()
+        self._set_attributes(locals())
+
+    def apply_image(self, img: np.ndarray) -> np.ndarray:
+        img = img.astype(np.float32)
+
+        # Determine random order of operations
+        ops = []
+        if self.brightness > 0:
+            ops.append("brightness")
+        if self.contrast > 0:
+            ops.append("contrast")
+        if self.saturation > 0:
+            ops.append("saturation")
+        if self.hue > 0:
+            ops.append("hue")
+        np.random.shuffle(ops)
+
+        for op in ops:
+            if op == "brightness":
+                factor = np.random.uniform(1 - self.brightness, 1 + self.brightness)
+                img = img * factor
+            elif op == "contrast":
+                factor = np.random.uniform(1 - self.contrast, 1 + self.contrast)
+                gray = np.mean(img, axis=2, keepdims=True)
+                mean_gray = np.mean(gray)
+                img = mean_gray + (img - mean_gray) * factor
+            elif op == "saturation":
+                factor = np.random.uniform(1 - self.saturation, 1 + self.saturation)
+                gray = np.mean(img, axis=2, keepdims=True)
+                img = gray + (img - gray) * factor
+            elif op == "hue":
+                shift = np.random.uniform(-self.hue, self.hue)
+                img_u8 = np.clip(img, 0, 255).astype(np.uint8)
+                hsv = cv2.cvtColor(img_u8, cv2.COLOR_RGB2HSV).astype(np.float32)
+                hsv[:, :, 0] = (hsv[:, :, 0] + shift * 180) % 180
+                img = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB).astype(
+                    np.float32
+                )
+
+        return np.clip(img, 0, 255).astype(np.float32)
+
+    def apply_coords(self, coords: np.ndarray) -> np.ndarray:
+        return coords
+
+
+class EqualizeTransform(Transform):
+    """Histogram equalization (per-channel)."""
+
+    def __init__(self):
+        super().__init__()
+
+    def apply_image(self, img: np.ndarray) -> np.ndarray:
+        img = np.clip(img, 0, 255).astype(np.uint8)
+        channels = [cv2.equalizeHist(img[:, :, c]) for c in range(3)]
+        return np.stack(channels, axis=2).astype(np.float32)
+
+    def apply_coords(self, coords: np.ndarray) -> np.ndarray:
+        return coords
+
+
+class PosterizeTransform(Transform):
+    """Reduce the number of bits per channel."""
+
+    def __init__(self, bits: int):
+        super().__init__()
+        self._set_attributes(locals())
+
+    def apply_image(self, img: np.ndarray) -> np.ndarray:
+        img = np.clip(img, 0, 255).astype(np.uint8)
+        shift = 8 - self.bits
+        img = (img >> shift) << shift
+        return img.astype(np.float32)
+
+    def apply_coords(self, coords: np.ndarray) -> np.ndarray:
+        return coords
+
+
+class SolarizeTransform(Transform):
+    """Invert pixels above a threshold."""
+
+    def __init__(self, threshold: int = 128):
+        super().__init__()
+        self._set_attributes(locals())
+
+    def apply_image(self, img: np.ndarray) -> np.ndarray:
+        img = np.clip(img, 0, 255).astype(np.float32)
+        mask = img >= self.threshold
+        img[mask] = 255.0 - img[mask]
+        return img
+
+    def apply_coords(self, coords: np.ndarray) -> np.ndarray:
+        return coords
+
+
+class AutoContrastTransform(Transform):
+    """Maximize contrast by stretching each channel to [0, 255]."""
+
+    def __init__(self):
+        super().__init__()
+
+    def apply_image(self, img: np.ndarray) -> np.ndarray:
+        img = np.clip(img, 0, 255).astype(np.float32)
+        result = np.empty_like(img)
+        for c in range(img.shape[2]):
+            ch = img[:, :, c]
+            lo, hi = ch.min(), ch.max()
+            if hi - lo > 0:
+                result[:, :, c] = (ch - lo) / (hi - lo) * 255.0
+            else:
+                result[:, :, c] = ch
+        return result
+
+    def apply_coords(self, coords: np.ndarray) -> np.ndarray:
+        return coords
+
+
+class SharpnessTransform(Transform):
+    """Adjust image sharpness by blending with a blurred version."""
+
+    def __init__(self, factor: float):
+        """
+        Args:
+            factor: 0.0 = blurred, 1.0 = original, >1.0 = sharpened.
+        """
+        super().__init__()
+        self._set_attributes(locals())
+
+    def apply_image(self, img: np.ndarray) -> np.ndarray:
+        img = img.astype(np.float32)
+        # 3x3 blur kernel (same as PIL)
+        kernel = np.array(
+            [[1, 1, 1], [1, 5, 1], [1, 1, 1]], dtype=np.float32
+        ) / 13.0
+        smooth = cv2.filter2D(img, -1, kernel)
+        result = smooth + (img - smooth) * self.factor
+        return np.clip(result, 0, 255).astype(np.float32)
+
+    def apply_coords(self, coords: np.ndarray) -> np.ndarray:
+        return coords
+
+
+class SmallAngleRotateTransform(Transform):
+    """
+    Rotate image by a small angle (degrees). Bounding-box safe: applies
+    rotation matrix to coordinates.
+    """
+
+    def __init__(self, angle: float, h: int, w: int):
+        """
+        Args:
+            angle: rotation angle in degrees (positive = counter-clockwise).
+            h: image height.
+            w: image width.
+        """
+        super().__init__()
+        self._set_attributes(locals())
+
+    def apply_image(self, img: np.ndarray) -> np.ndarray:
+        h, w = img.shape[:2]
+        center = (w / 2.0, h / 2.0)
+        M = cv2.getRotationMatrix2D(center, self.angle, 1.0)
+        rotated = cv2.warpAffine(
+            img.astype(np.float32), M, (w, h),
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(128, 128, 128),
+        )
+        return rotated.astype(np.float32)
+
+    def apply_coords(self, coords: np.ndarray) -> np.ndarray:
+        h, w = self.h, self.w
+        center = np.array([w / 2.0, h / 2.0], dtype=np.float64)
+        angle_rad = np.deg2rad(self.angle)
+        cos_a = np.cos(angle_rad)
+        sin_a = np.sin(angle_rad)
+        R = np.array([[cos_a, -sin_a], [sin_a, cos_a]], dtype=np.float64)
+        coords = coords.astype(np.float64)
+        coords = (coords - center) @ R.T + center
+        return coords.astype(np.float32)

@@ -365,6 +365,11 @@ def main(args):
                             lambda: trainer.test_with_TTA(cfg, trainer.model))]
         )
 
+    if cfg.TEST.GRADCAM.ENABLED:
+        trainer.register_hooks([
+            GradCAMHook(cfg)
+        ])
+
     # Change the layer of your choice
     trainer.register_hooks([
         # GradCAMHook("decoder.cls_subnet", cfg=cfg),

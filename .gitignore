@@ -132,3 +132,5 @@ dmypy.json
 
 output/
 wandb/
+datasets/coco2017/
+datasets/damage_annotations_march25/

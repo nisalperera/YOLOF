@@ -51,6 +51,61 @@ _C.INPUT.MOSAIC.MOSAIC_WIDTH = 640
 _C.INPUT.MOSAIC.MOSAIC_HEIGHT = 640
 
 # -----------------------------------------------------------------------------
+# Augmentation Group Selection
+# Accepted: "none", "minimal", "mixup", "cutmix", "mosaic", "mosaic_color",
+#           "autoaugment"
+# When set to anything other than "none", this overrides the individual
+# augmentation flags and builds the pipeline for the selected group.
+# -----------------------------------------------------------------------------
+_C.INPUT.AUG_GROUP = "none"
+
+# -----------------------------------------------------------------------------
+# Mixup Augmentation
+# -----------------------------------------------------------------------------
+_C.INPUT.MIXUP = CN()
+_C.INPUT.MIXUP.ENABLED = False
+_C.INPUT.MIXUP.ALPHA = 0.3
+_C.INPUT.MIXUP.PROB = 0.5
+_C.INPUT.MIXUP.POOL_CAPACITY = 1000
+_C.INPUT.MIXUP.MIN_BOX_AREA = 16
+
+# -----------------------------------------------------------------------------
+# CutMix Augmentation
+# -----------------------------------------------------------------------------
+_C.INPUT.CUTMIX = CN()
+_C.INPUT.CUTMIX.ENABLED = False
+_C.INPUT.CUTMIX.ALPHA = 0.7
+_C.INPUT.CUTMIX.PROB = 0.5
+_C.INPUT.CUTMIX.POOL_CAPACITY = 1000
+_C.INPUT.CUTMIX.MIN_BOX_AREA = 16
+
+# -----------------------------------------------------------------------------
+# Color Jitter (PIL-style, RGB space)
+# -----------------------------------------------------------------------------
+_C.INPUT.COLOR_JITTER = CN()
+_C.INPUT.COLOR_JITTER.ENABLED = False
+_C.INPUT.COLOR_JITTER.BRIGHTNESS = 0.15
+_C.INPUT.COLOR_JITTER.CONTRAST = 0.15
+_C.INPUT.COLOR_JITTER.SATURATION = 0.15
+_C.INPUT.COLOR_JITTER.HUE = 0.0
+
+# -----------------------------------------------------------------------------
+# AutoAugment (Detection-aware policy-based augmentation)
+# -----------------------------------------------------------------------------
+_C.INPUT.AUTOAUGMENT = CN()
+_C.INPUT.AUTOAUGMENT.ENABLED = False
+_C.INPUT.AUTOAUGMENT.NUM_POLICIES = 5
+
+# -----------------------------------------------------------------------------
+# Minimal group settings (conservative baseline)
+# -----------------------------------------------------------------------------
+_C.INPUT.MINIMAL = CN()
+_C.INPUT.MINIMAL.MIN_SIZE_TRAIN = (640, 672, 704, 736, 768, 800)
+_C.INPUT.MINIMAL.MAX_SIZE_TRAIN = 1333
+_C.INPUT.MINIMAL.FLIP_PROB = 0.5
+_C.INPUT.MINIMAL.BRIGHTNESS_JITTER = 0.0
+
+# -----------------------------------------------------------------------------
 # Anchor generator options
 # -----------------------------------------------------------------------------
 _C.MODEL.ANCHOR_GENERATOR.SIZES = [[32, 64, 128, 256, 512]]
