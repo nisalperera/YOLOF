@@ -23,3 +23,8 @@ TEST:
     LAYER_NAME: "decoder.cls_subnet"
 INPUT:
   MIN_SIZE_TRAIN: (800,)
+LOGGER:
+  WANDB:
+    ENABLED: False
+    PROJECT: "YOLOF"
+    NAME: "default"

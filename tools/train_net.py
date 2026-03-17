@@ -54,17 +54,17 @@ from detectron2.data.datasets.coco import register_coco_instances
 from detectron2.utils.events import EventStorage
 from detectron2.modeling import GeneralizedRCNNWithTTA
 
-from yolof.config import get_cfg, to_dict
+from yolof.config import get_cfg #, to_dict
 from yolof.data import YOLOFDatasetMapper
 from yolof.checkpoint import YOLOFCheckpointer
 from yolof.checkpoint import YOLOFCheckpointer
 from yolof.utils.events import WandBWriter
-from yolof.utils.wandb import get_latest_wandb_run
+# from yolof.utils.wandb import get_latest_wandb_run
 from yolof.hooks import GradCAMHook, BestCheckpointerAPARF1, EarlyStoppingHook
 from yolof.evaluation.coco_ar_ap import COCOEvaluatorWithAPandAR
 from yolof.data.samplers import EvenlyDistributedInferenceSampler
 
-import wandb
+# import wandb
 
 class Trainer(DefaultTrainer):
     """
@@ -75,21 +75,21 @@ class Trainer(DefaultTrainer):
     """
 
     def __init__(self, cfg):
-        if comm.is_main_process():
+        # if comm.is_main_process():
 
-            if not isinstance(to_dict(cfg), dict):
-                raise ValueError("Expected cfg to be a dict, but got {}".format(type(cfg)))
+        #     if not isinstance(to_dict(cfg), dict):
+        #         raise ValueError("Expected cfg to be a dict, but got {}".format(type(cfg)))
             
-            if os.getenv("WANDB_RESUME", "never") in ("must", "allow"):
-                wandb_latest = get_latest_wandb_run(os.path.join(cfg.OUTPUT_DIR, "wandb"))
-            else:
-                wandb_latest = {"run_id": None}
-            wandb.init(
-                entity="nisalperera", 
-                project="Thesis",
-                id=wandb_latest["run_id"] if wandb_latest["run_id"] else None,
-                config=to_dict(cfg),
-                dir=cfg.OUTPUT_DIR)
+        #     if os.getenv("WANDB_RESUME", "never") in ("must", "allow"):
+        #         wandb_latest = get_latest_wandb_run(os.path.join(cfg.OUTPUT_DIR, "wandb"))
+        #     else:
+        #         wandb_latest = {"run_id": None}
+        #     wandb.init(
+        #         entity="nisalperera", 
+        #         project="Thesis",
+        #         id=wandb_latest["run_id"] if wandb_latest["run_id"] else None,
+        #         config=to_dict(cfg),
+        #         dir=cfg.OUTPUT_DIR)
             
         super().__init__(cfg)
 

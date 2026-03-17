@@ -39,9 +39,15 @@ class WandBWriter(EventWriter):
         else:
             self._cfg = get_cfg()
 
+        self._enabled = cfg.LOGGER.WANDB.ENABLED
+
     @cached_property
     def _writer(self):
         """Lazily initialize W&B run on first write."""
+
+        if not self._enabled:
+            return None
+
         if wndb_init:
             if wandb.run is None:
                 return self._auto_init_wandb()
