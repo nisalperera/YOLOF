@@ -14,7 +14,7 @@ except ImportError:
 from functools import cached_property
 from detectron2.utils.events import EventWriter, get_event_storage
 
-from yolof.config import get_cfg
+from yolof.config import get_cfg, to_dict
 from .wandb import get_latest_wandb_run
 
 
@@ -31,7 +31,6 @@ class WandBWriter(EventWriter):
             kwargs: ignored (passed to wandb.init if needed)
         """
         self._window_size = window_size
-        self._writer_args = {"dir": cfg.OUTPUT_DIR, **kwargs}
         self._last_write = -1
 
         if cfg is not None:
@@ -39,6 +38,7 @@ class WandBWriter(EventWriter):
         else:
             self._cfg = get_cfg()
 
+        self._writer_args = {"dir": cfg.OUTPUT_DIR, "config": to_dict(self._cfg), **kwargs}
         self._enabled = cfg.LOGGER.WANDB.ENABLED
 
     @cached_property
