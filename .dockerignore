@@ -28,3 +28,4 @@ develop-eggs/
 *.DS_Store
 *.ipynb_checkpoints
 *.vscode/
+datasets/coco2027

@@ -287,10 +287,10 @@ def setup(args):
     # VAL_ANN_FILE = f'{root_dir}/datasets/damage_annotations_march25/val_annotations.json'
     # VAL_IMG_DIR = f'{root_dir}/datasets/damage_annotations_march25'
 
-    TRAIN_ANN_FILE = f'{root_dir}/datasets/coco2017/annotations/instances_train2017.json'
-    TRAIN_IMG_DIR = f'{root_dir}/datasets/coco2017/images/train2017'
-    VAL_ANN_FILE = f'{root_dir}/datasets/coco2017/annotations/instances_val2017.json'
-    VAL_IMG_DIR = f'{root_dir}/datasets/coco2017/images/val2017'
+    TRAIN_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_train2017.json'
+    TRAIN_IMG_DIR = f'{root_dir}/datasets/coco/images/train2017'
+    VAL_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_val2017.json'
+    VAL_IMG_DIR = f'{root_dir}/datasets/coco/images/val2017'
 
     with open(TRAIN_ANN_FILE, "r") as r:
         thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
