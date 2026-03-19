@@ -287,22 +287,28 @@ def setup(args):
     # VAL_ANN_FILE = f'{root_dir}/datasets/damage_annotations_march25/val_annotations.json'
     # VAL_IMG_DIR = f'{root_dir}/datasets/damage_annotations_march25'
 
-    TRAIN_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_train2017.json'
-    TRAIN_IMG_DIR = f'{root_dir}/datasets/coco/images/train2017'
-    VAL_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_val2017.json'
-    VAL_IMG_DIR = f'{root_dir}/datasets/coco/images/val2017'
+    thing_classes = []
 
-    with open(TRAIN_ANN_FILE, "r") as r:
-        thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
+    try:
+        TRAIN_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_train2017.json'
+        TRAIN_IMG_DIR = f'{root_dir}/datasets/coco/images/train2017'
+        VAL_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_val2017.json'
+        VAL_IMG_DIR = f'{root_dir}/datasets/coco/images/val2017'
 
-    register_coco_instances("coco2017_train", {}, TRAIN_ANN_FILE, TRAIN_IMG_DIR)
-    register_coco_instances("coco2017_val", {}, VAL_ANN_FILE, VAL_IMG_DIR)
+        with open(TRAIN_ANN_FILE, "r") as r:
+            thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
 
-    MetadataCatalog.get("coco2017_train").set(thing_classes=thing_classes)
-    MetadataCatalog.get("coco2017_val").set(thing_classes=thing_classes)
+        register_coco_instances("coco2017_train", {}, TRAIN_ANN_FILE, TRAIN_IMG_DIR)
+        register_coco_instances("coco2017_val", {}, VAL_ANN_FILE, VAL_IMG_DIR)
 
-    logger.info("Datasets registered successfully!")
-    logger.info("Available datasets: {}".format(DatasetCatalog.list()))
+        MetadataCatalog.get("coco2017_train").set(thing_classes=thing_classes)
+        MetadataCatalog.get("coco2017_val").set(thing_classes=thing_classes)
+
+        logger.info("Datasets registered successfully!")
+        logger.info("Available datasets: {}".format(DatasetCatalog.list()))
+
+    except Exception as e:
+        logger.error(f"Error registering datasets: {e}")
 
     cfg = get_cfg()
     cfg.set_new_allowed(True)
@@ -314,7 +320,7 @@ def setup(args):
     warmup_iters = cfg.SOLVER.WARMUP_ITERS * iters2epoch
     steps = cfg.SOLVER.STEPS
 
-    cfg.MODEL.YOLOF.DECODER.NUM_CLASSES = len(thing_classes)
+    cfg.MODEL.YOLOF.DECODER.NUM_CLASSES = len(thing_classes) | cfg.MODEL.YOLOF.DECODER.NUM_CLASSES
     cfg.MODEL.YOLOF.RETURN_VAL_LOSS = True
 
     cfg.DATASETS.TRAIN = ("coco2017_train",)
