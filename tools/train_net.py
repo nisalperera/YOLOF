@@ -287,28 +287,28 @@ def setup(args):
     # VAL_ANN_FILE = f'{root_dir}/datasets/damage_annotations_march25/val_annotations.json'
     # VAL_IMG_DIR = f'{root_dir}/datasets/damage_annotations_march25'
 
-    thing_classes = []
+    # thing_classes = []
 
-    try:
-        TRAIN_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_train2017.json'
-        TRAIN_IMG_DIR = f'{root_dir}/datasets/coco/images/train2017'
-        VAL_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_val2017.json'
-        VAL_IMG_DIR = f'{root_dir}/datasets/coco/images/val2017'
+    # try:
+    #     TRAIN_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_train2017.json'
+    #     TRAIN_IMG_DIR = f'{root_dir}/datasets/coco/images/train2017'
+    #     VAL_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_val2017.json'
+    #     VAL_IMG_DIR = f'{root_dir}/datasets/coco/images/val2017'
 
-        with open(TRAIN_ANN_FILE, "r") as r:
-            thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
+    #     with open(TRAIN_ANN_FILE, "r") as r:
+    #         thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
 
-        register_coco_instances("coco2017_train", {}, TRAIN_ANN_FILE, TRAIN_IMG_DIR)
-        register_coco_instances("coco2017_val", {}, VAL_ANN_FILE, VAL_IMG_DIR)
+    #     register_coco_instances("coco2017_train", {}, TRAIN_ANN_FILE, TRAIN_IMG_DIR)
+    #     register_coco_instances("coco2017_val", {}, VAL_ANN_FILE, VAL_IMG_DIR)
 
-        MetadataCatalog.get("coco2017_train").set(thing_classes=thing_classes)
-        MetadataCatalog.get("coco2017_val").set(thing_classes=thing_classes)
+    #     MetadataCatalog.get("coco2017_train").set(thing_classes=thing_classes)
+    #     MetadataCatalog.get("coco2017_val").set(thing_classes=thing_classes)
 
-        print("Datasets registered successfully!")
-        print("Available datasets: {}".format(DatasetCatalog.list()))
+    #     print("Datasets registered successfully!")
+    #     print("Available datasets: {}".format(DatasetCatalog.list()))
 
-    except Exception as e:
-        print(f"Error registering datasets: {e}")
+    # except Exception as e:
+    #     print(f"Error registering datasets: {e}")
 
     cfg = get_cfg()
     cfg.set_new_allowed(True)
