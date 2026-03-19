@@ -25,6 +25,6 @@ INPUT:
   MIN_SIZE_TRAIN: (800,)
 LOGGER:
   WANDB:
-    ENABLED: False
+    ENABLED: True
     PROJECT: "YOLOF"
     NAME: "default"
