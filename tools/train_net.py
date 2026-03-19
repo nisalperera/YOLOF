@@ -304,11 +304,11 @@ def setup(args):
         MetadataCatalog.get("coco2017_train").set(thing_classes=thing_classes)
         MetadataCatalog.get("coco2017_val").set(thing_classes=thing_classes)
 
-        logger.info("Datasets registered successfully!")
-        logger.info("Available datasets: {}".format(DatasetCatalog.list()))
+        print("Datasets registered successfully!")
+        print("Available datasets: {}".format(DatasetCatalog.list()))
 
     except Exception as e:
-        logger.error(f"Error registering datasets: {e}")
+        print(f"Error registering datasets: {e}")
 
     cfg = get_cfg()
     cfg.set_new_allowed(True)
