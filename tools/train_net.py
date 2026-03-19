@@ -277,10 +277,10 @@ def setup(args):
     root_dir = Path(__file__).resolve().parents[1]
 
     # Define paths for your datasets (assuming they were created in previous steps)
-    # TRAIN_ANN_FILE = '/kaggle/input/2017-2017/annotations_trainval2017/annotations/instances_train2017.json'
-    # TRAIN_IMG_DIR = '/kaggle/input/2017-2017/train2017/train2017'
-    # VAL_ANN_FILE = '/kaggle/input/2017-2017/annotations_trainval2017/annotations/instances_val2017.json'
-    # VAL_IMG_DIR = '/kaggle/input/2017-2017/val2017/val2017'
+    TRAIN_ANN_FILE = '/kaggle/input/2017-2017/annotations_trainval2017/annotations/instances_train2017.json'
+    TRAIN_IMG_DIR = '/kaggle/input/2017-2017/train2017/train2017'
+    VAL_ANN_FILE = '/kaggle/input/2017-2017/annotations_trainval2017/annotations/instances_val2017.json'
+    VAL_IMG_DIR = '/kaggle/input/2017-2017/val2017/val2017'
 
     # TRAIN_ANN_FILE = f'{root_dir}/datasets/damage_annotations_march25/train_annotations.json'
     # TRAIN_IMG_DIR = f'{root_dir}/datasets/damage_annotations_march25'
@@ -289,33 +289,33 @@ def setup(args):
 
     thing_classes = []
 
-    # try:
-    #     TRAIN_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_train2017.json'
-    #     TRAIN_IMG_DIR = f'{root_dir}/datasets/coco/images/train2017'
-    #     VAL_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_val2017.json'
-    #     VAL_IMG_DIR = f'{root_dir}/datasets/coco/images/val2017'
+    try:
+        # TRAIN_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_train2017.json'
+        # TRAIN_IMG_DIR = f'{root_dir}/datasets/coco/images/train2017'
+        # VAL_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_val2017.json'
+        # VAL_IMG_DIR = f'{root_dir}/datasets/coco/images/val2017'
 
-    #     with open(TRAIN_ANN_FILE, "r") as r:
-    #         thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
+        with open(TRAIN_ANN_FILE, "r") as r:
+            thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
 
-    #     register_coco_instances("coco2017_train", {}, TRAIN_ANN_FILE, TRAIN_IMG_DIR)
-    #     register_coco_instances("coco2017_val", {}, VAL_ANN_FILE, VAL_IMG_DIR)
+        register_coco_instances("coco2017_train", {}, TRAIN_ANN_FILE, TRAIN_IMG_DIR)
+        register_coco_instances("coco2017_val", {}, VAL_ANN_FILE, VAL_IMG_DIR)
 
-    #     MetadataCatalog.get("coco2017_train").set(thing_classes=thing_classes)
-    #     MetadataCatalog.get("coco2017_val").set(thing_classes=thing_classes)
+        MetadataCatalog.get("coco2017_train").set(thing_classes=thing_classes)
+        MetadataCatalog.get("coco2017_val").set(thing_classes=thing_classes)
 
-    #     print("Datasets registered successfully!")
-    #     print("Available datasets: {}".format(DatasetCatalog.list()))
+        print("Datasets registered successfully!")
+        print("Available datasets: {}".format(DatasetCatalog.list()))
 
-    # except Exception as e:
-    #     print(f"Error registering datasets: {e}")
+    except Exception as e:
+        print(f"Error registering datasets: {e}")
 
     cfg = get_cfg()
     cfg.set_new_allowed(True)
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
 
-    iters2epoch = math.floor(len(DatasetCatalog.get("coco_2017_train")) / (cfg.SOLVER.IMS_PER_BATCH * args.num_gpus))
+    iters2epoch = math.floor(len(DatasetCatalog.get("coco2017_train")) / (cfg.SOLVER.IMS_PER_BATCH * args.num_gpus))
     max_iter = cfg.SOLVER.MAX_ITER * iters2epoch
     warmup_iters = cfg.SOLVER.WARMUP_ITERS * iters2epoch
     steps = cfg.SOLVER.STEPS
@@ -323,8 +323,8 @@ def setup(args):
     cfg.MODEL.YOLOF.DECODER.NUM_CLASSES = len(thing_classes) | cfg.MODEL.YOLOF.DECODER.NUM_CLASSES
     cfg.MODEL.YOLOF.RETURN_VAL_LOSS = True
 
-    # cfg.DATASETS.TRAIN = ("coco2017_train",)
-    # cfg.DATASETS.TEST = ("coco2017_val",)
+    cfg.DATASETS.TRAIN = ("coco2017_train",)
+    cfg.DATASETS.TEST = ("coco2017_val",)
     cfg.SOLVER.MAX_ITER = max_iter
     cfg.SOLVER.WARMUP_ITERS = warmup_iters
     # cfg.OUTPUT_DIR = "./output/baseline_yolof_coco2017"
