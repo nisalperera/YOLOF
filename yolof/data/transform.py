@@ -206,21 +206,25 @@ class YOLOFDistortTransform(Transform):
 
 @HFlipTransform.register_type("meta_infos")
 def apply_meta_infos(hflip_transform: Transform, meta_infos: Dict) -> Dict:
-    pleft = meta_infos["jitter_pad_left"]
-    pright = meta_infos["jitter_pad_right"]
+    pleft = meta_infos.get("jitter_pad_left", 0)
+    pright = meta_infos.get("jitter_pad_right", 0)
     pleft, pright = pright, pleft
     meta_infos["jitter_pad_left"] = pleft
     meta_infos["jitter_pad_right"] = pright
+    meta_infos.setdefault("jitter_pad_top", 0)
+    meta_infos.setdefault("jitter_pad_bot", 0)
     return meta_infos
 
 
 @VFlipTransform.register_type("meta_infos")
 def apply_meta_infos(vflip_transform: Transform, meta_infos: Dict) -> Dict:
-    ptop = meta_infos["jitter_pad_top"]
-    pbot = meta_infos["jitter_pad_bot"]
+    ptop = meta_infos.get("jitter_pad_top", 0)
+    pbot = meta_infos.get("jitter_pad_bot", 0)
     ptop, pbot = pbot, ptop
     meta_infos["jitter_pad_top"] = ptop
     meta_infos["jitter_pad_bot"] = pbot
+    meta_infos.setdefault("jitter_pad_left", 0)
+    meta_infos.setdefault("jitter_pad_right", 0)
     return meta_infos
 
 
@@ -228,10 +232,12 @@ def apply_meta_infos(vflip_transform: Transform, meta_infos: Dict) -> Dict:
 def apply_meta_infos(resize_transform: Transform, meta_infos: Dict) -> Dict:
     scale_w = resize_transform.new_w * 1.0 / resize_transform.w
     scale_h = resize_transform.new_h * 1.0 / resize_transform.h
-    meta_infos["jitter_pad_left"] *= scale_w
-    meta_infos["jitter_pad_right"] *= scale_w
-    meta_infos["jitter_pad_top"] *= scale_h
-    meta_infos["jitter_pad_bot"] *= scale_h
+    meta_infos["jitter_pad_left"] = meta_infos.get("jitter_pad_left", 0) * scale_w
+    meta_infos["jitter_pad_right"] = (
+        meta_infos.get("jitter_pad_right", 0) * scale_w
+    )
+    meta_infos["jitter_pad_top"] = meta_infos.get("jitter_pad_top", 0) * scale_h
+    meta_infos["jitter_pad_bot"] = meta_infos.get("jitter_pad_bot", 0) * scale_h
     return meta_infos
 
 

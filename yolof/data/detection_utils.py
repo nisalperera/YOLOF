@@ -165,7 +165,12 @@ def transform_instance_annotations(
 
     # add meta_infos
     if add_meta_infos:
-        meta_infos = dict()
+        meta_infos = {
+            "jitter_pad_left": 0,
+            "jitter_pad_right": 0,
+            "jitter_pad_top": 0,
+            "jitter_pad_bot": 0,
+        }
         meta_infos = transforms.apply_meta_infos(meta_infos)
         annotation["meta_infos"] = meta_infos
     return annotation
