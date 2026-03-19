@@ -315,7 +315,7 @@ def setup(args):
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
 
-    iters2epoch = math.floor(len(DatasetCatalog.get("coco2017_train")) / (cfg.SOLVER.IMS_PER_BATCH * args.num_gpus))
+    iters2epoch = math.floor(len(DatasetCatalog.get("coco_2017_train")) / (cfg.SOLVER.IMS_PER_BATCH * args.num_gpus))
     max_iter = cfg.SOLVER.MAX_ITER * iters2epoch
     warmup_iters = cfg.SOLVER.WARMUP_ITERS * iters2epoch
     steps = cfg.SOLVER.STEPS
@@ -323,8 +323,8 @@ def setup(args):
     cfg.MODEL.YOLOF.DECODER.NUM_CLASSES = len(thing_classes) | cfg.MODEL.YOLOF.DECODER.NUM_CLASSES
     cfg.MODEL.YOLOF.RETURN_VAL_LOSS = True
 
-    cfg.DATASETS.TRAIN = ("coco2017_train",)
-    cfg.DATASETS.TEST = ("coco2017_val",)
+    # cfg.DATASETS.TRAIN = ("coco2017_train",)
+    # cfg.DATASETS.TEST = ("coco2017_val",)
     cfg.SOLVER.MAX_ITER = max_iter
     cfg.SOLVER.WARMUP_ITERS = warmup_iters
     # cfg.OUTPUT_DIR = "./output/baseline_yolof_coco2017"
