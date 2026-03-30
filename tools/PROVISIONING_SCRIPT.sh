@@ -38,8 +38,8 @@ apt update && apt install -y --no-install-recommends \
     openssh-client \
     ninja-build
 
-python3 -m pip install 'git+https://github.com/JunnYu/mish-cuda.git'
-python3 -m pip install 'git+https://github.com/facebookresearch/detectron2.git'
+python3 -m pip install 'git+https://github.com/JunnYu/mish-cuda.git' --no-build-isolation
+python3 -m pip install 'git+https://github.com/facebookresearch/detectron2.git' --no-build-isolation
 
 wget https://raw.githubusercontent.com/nisalperera/YOLOF/refs/heads/hyperparam_sweep/requirements.txt
 
