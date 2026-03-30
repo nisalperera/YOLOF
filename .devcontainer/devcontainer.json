@@ -4,16 +4,17 @@
     "context": "${localWorkspaceFolder}",
     "dockerfile": "${localWorkspaceFolder}/docker/Dockerfile",
     "args": {
-      "UID": "${localEnv:UID:1000}",
-      "GID": "${localEnv:GID:1000}",
+      // "UID": "${localEnv:USER_ID}",
+      // "GID": "${localEnv:GROUP_ID}",
       "USER": "${localEnv:USER:ubuntu}"
     }
   },
-  "workspaceFolder": "/home/${localEnv:USER:ubuntu}/YOLOF",
-  "remoteUser": "${localEnv:USER:ubuntu}",
+  "workspaceFolder": "/home/${localEnv:USER}/YOLOF",
+  "remoteUser": "${localEnv:USER}",
+  "updateRemoteUserUID": false,
   "containerEnv": {
-    "HOME": "/home/${localEnv:USER:ubuntu}",
-    "USER": "${localEnv:USER:ubuntu}"
+    "HOME": "/home/${localEnv:USER}",
+    // "USER": "${localEnv:USER}"
   },
   "runArgs": [
     "--network=host",

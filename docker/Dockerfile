@@ -15,7 +15,8 @@ ENV TORCHVISION_VERSION=0.23.0
 # Create non-root user early (as root)
 ARG USER=ubuntu
 ARG UID=1000
-ARG GID=$UID
+ARG GID=1000
+ENV USER=${USER} UID=${UID} GID=${GID}
 
 RUN groupadd --gid $GID $USER && \
     useradd -s /bin/bash --uid $UID --gid $GID -m $USER && \
