@@ -33,13 +33,11 @@ download_and_extract() {
 }
 
 # VOC 2007
-download_and_extract "http://host.robots.ox.ac.uk/pascal/VOC/voc2007/VOCtrainval_06-Nov-2007.tar" "$VOC2007_DIR"
-download_and_extract "http://host.robots.ox.ac.uk/pascal/VOC/voc2007/VOCtest_06-Nov-2007.tar" "$VOC2007_DIR"
-download_and_extract "http://host.robots.ox.ac.uk/pascal/VOC/voc2007/VOCdevkit_08-Jun-2007.tar" "$VOC2007_DIR"
+download_and_extract "http://host.robots.ox.ac.uk/pascal/VOC/voc2007/VOCtrainval_06-Nov-2007.tar" "$VOC2007_DIR/trainval"
+download_and_extract "http://host.robots.ox.ac.uk/pascal/VOC/voc2007/VOCtest_06-Nov-2007.tar" "$VOC2007_DIR/test"
 
 # VOC 2012
-download_and_extract "http://host.robots.ox.ac.uk/pascal/VOC/voc2012/VOCtrainval_11-May-2012.tar" "$VOC2012_DIR"
-download_and_extract "http://host.robots.ox.ac.uk/pascal/VOC/voc2012/VOCdevkit_18-May-2011.tar" "$VOC2012_DIR"
+download_and_extract "http://host.robots.ox.ac.uk/pascal/VOC/voc2012/VOCtrainval_11-May-2012.tar" "$VOC2012_DIR/trainval"
 
 echo "Done."
 
