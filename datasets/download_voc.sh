@@ -30,6 +30,8 @@ download_and_extract() {
 
   echo "Extracting $file to $outdir..."
   tar -xf "$archive" -C "$outdir"
+
+  rm -rf "$archive"
 }
 
 # VOC 2007
@@ -38,6 +40,14 @@ download_and_extract "http://host.robots.ox.ac.uk/pascal/VOC/voc2007/VOCtest_06-
 
 # VOC 2012
 download_and_extract "http://host.robots.ox.ac.uk/pascal/VOC/voc2012/VOCtrainval_11-May-2012.tar" "$VOC2012_DIR/trainval"
+
+mv $VOC2007_DIR/trainval/VOCdevkit/VOC2007/* $VOC2007_DIR/trainval/
+mv $VOC2012_DIR/trainval/VOCdevkit/VOC2012/* $VOC2012_DIR/trainval/
+rm -rf $VOC2007_DIR/trainval/VOCdevkit
+rm -rf $VOC2012_DIR/trainval/VOCdevkit
+
+mv $VOC2007_DIR/test/VOCdevkit/VOC2007/* $VOC2007_DIR/test/
+rm -rf $VOC2007_DIR/test/VOCdevkit
 
 echo "Done."
 
