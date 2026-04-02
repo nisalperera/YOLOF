@@ -12,6 +12,7 @@ Analyzes the loss landscape between two trained YOLOF models by:
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional
 
@@ -139,24 +140,33 @@ def build_eval_dataloader(cfg, dataset_name: str = "coco2017_val"):
     return dataloader
 
 
-def analyze_connectivity(
+def analyze_pair(
+    pair_idx: int,
+    total_pairs: int,
+    model1_path: str,
+    model2_path: str,
     config_file: str,
-    model_pairs: List[Tuple[str, str]],
-    output_dir: str = "output/lmc_analysis",
+    output_dir: Path,
     num_alpha_samples: int = 11,
     max_eval_samples: Optional[int] = 500,
     device: Optional[torch.device | str] = None,
-) -> None:
+) -> Tuple[int, str, bool, Optional[str]]:
     """
-    Main function to analyze linear mode connectivity between model pairs.
+    Analyze a single model pair (for parallel execution).
     
     Args:
+        pair_idx: Index of this pair in the list
+        total_pairs: Total number of pairs
+        model1_path: Path to first model checkpoint
+        model2_path: Path to second model checkpoint
         config_file: Path to YOLOF config file
-        model_pairs: List of (model1_path, model2_path) tuples
-        output_dir: Directory to save analysis results
+        output_dir: Base output directory
         num_alpha_samples: Number of alpha samples to use
         max_eval_samples: Maximum number of validation samples per alpha
         device: Device to run on (cuda or cpu)
+        
+    Returns:
+        Tuple of (pair_idx, pair_name, success, error_msg)
     """
     # Setup device
     if device is None:
@@ -166,143 +176,203 @@ def analyze_connectivity(
     else:
         torch_device = device
     
-    logger.info(f"Using device: {torch_device}")
+    pair_name = f"{Path(model1_path).parent.name}_vs_{Path(model2_path).parent.name}"
+    pair_output_dir = output_dir / pair_name
+    pair_output_dir.mkdir(parents=True, exist_ok=True)
     
+    logger.info(f"\n{'='*70}")
+    logger.info(f"[Worker {pair_idx + 1}/{total_pairs}] Analyzing: {pair_name}")
+    logger.info(f"Model 1: {model1_path}")
+    logger.info(f"Model 2: {model2_path}")
+    logger.info(f"{'='*70}")
+    
+    try:
+        # Setup config and datasets (each worker gets its own instances)
+        cfg = setup_datasets_and_config(config_file)
+        
+        # Build model and dataloader for this worker
+        model = build_model(cfg)
+        model.to(torch_device)
+        dataloader = build_eval_dataloader(cfg)
+        
+        # Load checkpoints
+        state_dict1 = load_checkpoint_state_dict(model1_path)
+        state_dict2 = load_checkpoint_state_dict(model2_path)
+        
+        # Validate compatibility
+        validate_model_compatibility(state_dict1, state_dict2)
+        
+        # Generate alpha values
+        alpha_values = np.linspace(0.0, 1.0, num_alpha_samples)
+        
+        # Evaluate at each alpha
+        loss_results = {
+            "alpha": [],
+            "loss_total": [],
+            "loss_cls": [],
+            "loss_box_reg": [],
+            "num_samples": [],
+        }
+        
+        for alpha_idx, alpha in enumerate(alpha_values):
+            logger.info(f"[{pair_name}] Alpha = {alpha:.2f} ({alpha_idx + 1}/{len(alpha_values)})")
+            
+            # Interpolate models
+            interpolated_state_dict = interpolate_state_dict(state_dict1, state_dict2, float(alpha))
+            
+            # Load interpolated weights into model
+            model.load_state_dict(interpolated_state_dict)
+            model.to(torch_device)
+            model.eval()
+            
+            # Evaluate loss
+            loss_dict = evaluate_loss_on_dataset(
+                model,
+                dataloader,
+                torch_device,
+                return_val_loss=True,
+                max_samples=max_eval_samples,
+            )
+            
+            # Store results
+            loss_results["alpha"].append(float(alpha))
+            loss_results["loss_total"].append(loss_dict["loss_total"])
+            loss_results["loss_cls"].append(loss_dict["loss_cls"])
+            loss_results["loss_box_reg"].append(loss_dict["loss_box_reg"])
+            loss_results["num_samples"].append(loss_dict["num_samples"])
+        
+        # Compute connectivity metrics
+        alpha_array = np.array(loss_results["alpha"])
+        loss_array = np.array(loss_results["loss_total"])
+        loss_cls_array = np.array(loss_results["loss_cls"])
+        loss_reg_array = np.array(loss_results["loss_box_reg"])
+        
+        metrics = compute_connectivity_metrics(
+            alpha_array,
+            loss_array,
+            loss_cls_array,
+            loss_bbox_curve=loss_reg_array,
+        )
+        
+        # Save results
+        results_file = pair_output_dir / "lmc_results.json"
+        with open(results_file, "w") as f:
+            json.dump(
+                {
+                    "model_pair": {
+                        "model1": str(model1_path),
+                        "model2": str(model2_path),
+                    },
+                    "loss_curve": loss_results,
+                    "metrics": metrics,
+                    "evaluation": {
+                        "max_eval_samples": max_eval_samples,
+                        "num_alpha_samples": num_alpha_samples,
+                    },
+                },
+                f,
+                indent=2,
+            )
+        logger.info(f"[{pair_name}] Results saved to {results_file}")
+        
+        # Log metrics
+        logger.info(f"[{pair_name}] Connectivity Metrics:")
+        logger.info(f"[{pair_name}]   Total barrier: {metrics['barrier_height']:.6f} (normalized {metrics['normalized_barrier']:.6f})")
+        logger.info(f"[{pair_name}]   Cls barrier:   {metrics.get('barrier_height_cls', float('nan')):.6f} (normalized {metrics.get('normalized_barrier_cls', float('nan')):.6f})")
+        logger.info(f"[{pair_name}]   BBox barrier:  {metrics.get('barrier_height_bbox', float('nan')):.6f} (normalized {metrics.get('normalized_barrier_bbox', float('nan')):.6f})")
+        
+        # Optional: generate visualization
+        try:
+            generate_visualization(loss_results, metrics, pair_output_dir)
+        except Exception as e:
+            logger.warning(f"[{pair_name}] Failed to generate visualization: {e}")
+        
+        return pair_idx, pair_name, True, None
+    
+    except Exception as e:
+        error_msg = f"Error analyzing pair: {e}"
+        logger.error(f"[{pair_name}] {error_msg}", exc_info=True)
+        return pair_idx, pair_name, False, error_msg
+
+
+def analyze_connectivity(
+    config_file: str,
+    model_pairs: List[Tuple[str, str]],
+    output_dir: str = "output/lmc_analysis",
+    num_alpha_samples: int = 11,
+    max_eval_samples: Optional[int] = 500,
+    device: Optional[torch.device | str] = None,
+    num_workers: int = 5,
+) -> None:
+    """
+    Main function to analyze linear mode connectivity between model pairs (parallel).
+    
+    Args:
+        config_file: Path to YOLOF config file
+        model_pairs: List of (model1_path, model2_path) tuples
+        output_dir: Directory to save analysis results
+        num_alpha_samples: Number of alpha samples to use
+        max_eval_samples: Maximum number of validation samples per alpha
+        device: Device to run on (cuda or cpu)
+        num_workers: Number of parallel workers (default: 5)
+    """
     # Setup output directory
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     logger.info(f"Output directory: {output_path}")
+    logger.info(f"Using {num_workers} parallel workers")
+    logger.info(f"Analyzing {len(model_pairs)} model pair(s)")
     
-    # Setup config and datasets
-    cfg = setup_datasets_and_config(config_file)
+    # Use ThreadPoolExecutor to parallelize analysis
+    completed_pairs = []
+    failed_pairs = []
     
-    # Build model (just for architecture reference)
-    logger.info("Building model...")
-    model = build_model(cfg)
-    model.to(torch_device)
-    
-    # Build dataloader for evaluation
-    dataloader = build_eval_dataloader(cfg)
-    
-    # Analyze each model pair
-    for pair_idx, (model1_path, model2_path) in enumerate(model_pairs):
-        logger.info(f"\n{'='*70}")
-        logger.info(f"Analyzing pair {pair_idx + 1}/{len(model_pairs)}")
-        logger.info(f"Model 1: {model1_path}")
-        logger.info(f"Model 2: {model2_path}")
-        logger.info(f"{'='*70}")
-        
-        # Create output subdir for this pair
-        pair_name = f"{Path(model1_path).parent.name}_vs_{Path(model2_path).parent.name}"
-        pair_output_dir = output_path / pair_name
-        pair_output_dir.mkdir(parents=True, exist_ok=True)
-        
-        try:
-            # Load checkpoints
-            state_dict1 = load_checkpoint_state_dict(model1_path)
-            state_dict2 = load_checkpoint_state_dict(model2_path)
-            
-            # Validate compatibility
-            validate_model_compatibility(state_dict1, state_dict2)
-            
-            # Generate alpha values
-            alpha_values = np.linspace(0.0, 1.0, num_alpha_samples)
-            logger.info(f"Alpha values: {alpha_values}")
-            
-            # Evaluate at each alpha
-            loss_results = {
-                "alpha": [],
-                "loss_total": [],
-                "loss_cls": [],
-                "loss_box_reg": [],
-                "num_samples": [],
-            }
-            
-            for alpha_idx, alpha in enumerate(alpha_values):
-                logger.info(f"\nEvaluating alpha = {alpha:.2f} ({alpha_idx + 1}/{len(alpha_values)})")
-                
-                # Interpolate models
-                interpolated_state_dict = interpolate_state_dict(state_dict1, state_dict2, float(alpha))
-                
-                # Load interpolated weights into model
-                model.load_state_dict(interpolated_state_dict)
-                model.to(device)
-                model.eval()
-                
-                # Evaluate loss
-                loss_dict = evaluate_loss_on_dataset(
-                    model,
-                    dataloader,
-                    torch_device,
-                    return_val_loss=True,
-                    max_samples=max_eval_samples,
-                )
-                
-                # Store results
-                loss_results["alpha"].append(float(alpha))
-                loss_results["loss_total"].append(loss_dict["loss_total"])
-                loss_results["loss_cls"].append(loss_dict["loss_cls"])
-                loss_results["loss_box_reg"].append(loss_dict["loss_box_reg"])
-                loss_results["num_samples"].append(loss_dict["num_samples"])
-            
-            # Compute connectivity metrics
-            alpha_array = np.array(loss_results["alpha"])
-            loss_array = np.array(loss_results["loss_total"])
-            loss_cls_array = np.array(loss_results["loss_cls"])
-            loss_reg_array = np.array(loss_results["loss_box_reg"])
-            
-            metrics = compute_connectivity_metrics(
-                alpha_array,
-                loss_array,
-                loss_cls_array,
-                loss_bbox_curve=loss_reg_array,
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        # Submit all tasks
+        future_to_idx = {}
+        for pair_idx, (model1_path, model2_path) in enumerate(model_pairs):
+            future = executor.submit(
+                analyze_pair,
+                pair_idx,
+                len(model_pairs),
+                model1_path,
+                model2_path,
+                config_file,
+                output_path,
+                num_alpha_samples,
+                max_eval_samples,
+                device,
             )
-            
-            # Save results
-            results_file = pair_output_dir / "lmc_results.json"
-            with open(results_file, "w") as f:
-                json.dump(
-                    {
-                        "model_pair": {
-                            "model1": str(model1_path),
-                            "model2": str(model2_path),
-                        },
-                        "loss_curve": loss_results,
-                        "metrics": metrics,
-                        "evaluation": {
-                            "max_eval_samples": max_eval_samples,
-                            "num_alpha_samples": num_alpha_samples,
-                        },
-                    },
-                    f,
-                    indent=2,
-                )
-            logger.info(f"Results saved to {results_file}")
-            
-            # Log metrics
-            logger.info(f"\nConnectivity Metrics:")
-            logger.info(f"  Total barrier: {metrics['barrier_height']:.6f} (normalized {metrics['normalized_barrier']:.6f})")
-            logger.info(f"  Cls barrier:   {metrics.get('barrier_height_cls', float('nan')):.6f} (normalized {metrics.get('normalized_barrier_cls', float('nan')):.6f})")
-            logger.info(f"  BBox barrier:  {metrics.get('barrier_height_bbox', float('nan')):.6f} (normalized {metrics.get('normalized_barrier_bbox', float('nan')):.6f})")
-            logger.info(f"  Max loss: {metrics['max_loss']:.6f}")
-            logger.info(f"  Min loss: {metrics['min_loss']:.6f}")
-            logger.info(f"  Loss range: {metrics['loss_range']:.6f}")
-            logger.info(f"  Mean loss: {metrics['mean_loss']:.6f}")
-            logger.info(f"  Std loss: {metrics['std_loss']:.6f}")
-            logger.info(f"  Curvature: {metrics['curvature']:.6f}")
-            
-            # Optional: generate visualization
-            try:
-                generate_visualization(loss_results, metrics, pair_output_dir)
-            except Exception as e:
-                logger.warning(f"Failed to generate visualization: {e}")
+            future_to_idx[future] = pair_idx
         
-        except Exception as e:
-            logger.error(f"Error analyzing pair: {e}", exc_info=True)
-            continue
+        # Process completed futures as they finish
+        for future in as_completed(future_to_idx):
+            try:
+                pair_idx, pair_name, success, error_msg = future.result()
+                if success:
+                    completed_pairs.append(pair_name)
+                    logger.info(f"✓ Completed: {pair_name}")
+                else:
+                    failed_pairs.append((pair_name, error_msg))
+                    logger.error(f"✗ Failed: {pair_name} - {error_msg}")
+            except Exception as e:
+                logger.error(f"Exception in worker thread: {e}", exc_info=True)
+                failed_pairs.append((f"Task-{future_to_idx[future]}", str(e)))
     
+    # Print summary
     logger.info(f"\n{'='*70}")
-    logger.info("Analysis complete!")
+    logger.info("Analysis Summary")
+    logger.info(f"{'='*70}")
+    logger.info(f"Completed: {len(completed_pairs)}/{len(model_pairs)}")
+    if completed_pairs:
+        for pair_name in completed_pairs:
+            logger.info(f"  ✓ {pair_name}")
+    if failed_pairs:
+        logger.warning(f"Failed: {len(failed_pairs)}")
+        for pair_name, error_msg in failed_pairs:
+            logger.warning(f"  ✗ {pair_name}")
+            if error_msg:
+                logger.warning(f"    Error: {error_msg}")
     logger.info(f"Results saved to {output_path}")
 
 
@@ -448,6 +518,12 @@ def main():
         default=None,
         help="Device to use (cuda or cpu)",
     )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=5,
+        help="Number of parallel workers (default: 5)",
+    )
     
     args = parser.parse_args()
     
@@ -484,6 +560,7 @@ def main():
         num_alpha_samples=args.num_alpha_samples,
         max_eval_samples=args.max_eval_samples,
         device=args.device,
+        num_workers=args.num_workers,
     )
 
 

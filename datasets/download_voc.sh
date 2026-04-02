@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -e
 
-BASE_DIR="/home/nisalperera/Projects/personal/data/pascal-voc"
+apt install aria2 bc -y
+
+start_time=$(date +%s.%N)
+
+export DETECTRON2_DATASETS=${DETECTRON2_DATASETS:-./datasets}
+echo "DETECTRON2_DATASETS=$DETECTRON2_DATASETS"
+
+BASE_DIR="$DETECTRON2_DATASETS/pascal-voc"
 VOC2007_DIR="$BASE_DIR/2007"
 VOC2012_DIR="$BASE_DIR/2012"
 
@@ -35,3 +42,13 @@ download_and_extract "http://host.robots.ox.ac.uk/pascal/VOC/voc2012/VOCtrainval
 download_and_extract "http://host.robots.ox.ac.uk/pascal/VOC/voc2012/VOCdevkit_18-May-2011.tar" "$VOC2012_DIR"
 
 echo "Done."
+
+echo "Sample files from VOC 2007:"
+ls -lh $VOC2007_DIR | head -5
+
+echo "Sample files from VOC 2012:"
+ls -lh $VOC2012_DIR | head -5
+
+end_time=$(date +%s.%N)
+duration=$(echo "$end_time - $start_time" | bc -l)
+echo "Total processing time: ${duration} seconds (~$(printf "%.1f" $(echo "$duration / 60" | bc -l)) minutes)"
