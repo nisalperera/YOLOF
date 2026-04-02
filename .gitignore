@@ -130,6 +130,7 @@ dmypy.json
 
 .idea/
 
+markdown/
 output/
 wandb/
 datasets/coco2017/

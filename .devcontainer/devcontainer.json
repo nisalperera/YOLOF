@@ -4,8 +4,8 @@
     "context": "${localWorkspaceFolder}",
     "dockerfile": "${localWorkspaceFolder}/docker/Dockerfile",
     "args": {
-      // "UID": "${localEnv:USER_ID}",
-      // "GID": "${localEnv:GROUP_ID}",
+      "UID": "${localEnv:USER_ID}",
+      "GID": "${localEnv:GROUP_ID}",
       "USER": "${localEnv:USER:ubuntu}"
     }
   },
@@ -14,7 +14,7 @@
   "updateRemoteUserUID": false,
   "containerEnv": {
     "HOME": "/home/${localEnv:USER}",
-    // "USER": "${localEnv:USER}"
+    "USER": "${localEnv:USER}"
   },
   "runArgs": [
     "--network=host",
@@ -24,8 +24,10 @@
     "--name=YOLOF"
   ],
   "mounts": [
-    "source=${localEnv:HOME}/Projects/personal/data/coco2017/,target=/home/${localEnv:USER:ubuntu}/YOLOF/datasets/coco/,type=bind",
-    "source=${localWorkspaceFolder}/output/,target=/home/${localEnv:USER:ubuntu}/YOLOF/output/,type=bind"
+    "source=${localEnv:HOME}/Projects/personal/data/,target=/home/${localEnv:USER:ubuntu}/YOLOF/datasets/,type=bind",
+    "source=${localEnv:HOME}/Projects/personal/models/,target=/home/${localEnv:USER:ubuntu}/YOLOF/models/,type=bind",
+    "source=${localEnv:HOME}/Projects/personal/output/,target=/home/${localEnv:USER:ubuntu}/YOLOF/output/,type=bind"
+    
   ],
   "customizations": {
     "vscode": {
@@ -38,6 +40,6 @@
     }
   },
   "remoteEnv": {
-    "DOCKER_BUILDKIT": "1"
+    "DOCKER_BUILDKIT": "0"
   }
 }
