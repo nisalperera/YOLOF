@@ -54,17 +54,15 @@ from detectron2.data.datasets.coco import register_coco_instances
 from detectron2.utils.events import EventStorage
 from detectron2.modeling import GeneralizedRCNNWithTTA
 
-from yolof.config import get_cfg #, to_dict
+from yolof.config import get_cfg, to_dict
 from yolof.data import YOLOFDatasetMapper
 from yolof.checkpoint import YOLOFCheckpointer
 from yolof.checkpoint import YOLOFCheckpointer
 from yolof.utils.events import WandBWriter
-# from yolof.utils.wandb import get_latest_wandb_run
 from yolof.hooks import GradCAMHook, BestCheckpointerAPARF1, EarlyStoppingHook
 from yolof.evaluation.coco_ar_ap import COCOEvaluatorWithAPandAR
 from yolof.data.samplers import EvenlyDistributedInferenceSampler
 
-# import wandb
 
 class Trainer(DefaultTrainer):
     """
@@ -74,23 +72,9 @@ class Trainer(DefaultTrainer):
     own training loop. You can use "tools/plain_train_net.py" as an example.
     """
 
-    def __init__(self, cfg):
-        # if comm.is_main_process():
+    logger = logging.getLogger("detectron2.trainer")
 
-        #     if not isinstance(to_dict(cfg), dict):
-        #         raise ValueError("Expected cfg to be a dict, but got {}".format(type(cfg)))
-            
-        #     if os.getenv("WANDB_RESUME", "never") in ("must", "allow"):
-        #         wandb_latest = get_latest_wandb_run(os.path.join(cfg.OUTPUT_DIR, "wandb"))
-        #     else:
-        #         wandb_latest = {"run_id": None}
-        #     wandb.init(
-        #         entity="nisalperera", 
-        #         project="Thesis",
-        #         id=wandb_latest["run_id"] if wandb_latest["run_id"] else None,
-        #         config=to_dict(cfg),
-        #         dir=cfg.OUTPUT_DIR)
-            
+    def __init__(self, cfg):
         super().__init__(cfg)
 
     @classmethod
@@ -106,45 +90,18 @@ class Trainer(DefaultTrainer):
         if output_folder is None:
             output_folder = os.path.join(cfg.OUTPUT_DIR, "inference")
         evaluator_list = []
-        evaluator_type = MetadataCatalog.get(dataset_name).evaluator_type
-        if evaluator_type in ["sem_seg", "coco_panoptic_seg"]:
-            evaluator_list.append(
-                SemSegEvaluator(
-                    dataset_name,
-                    distributed=True,
-                    output_dir=output_folder,
-                )
-            )
-        if evaluator_type in ["coco", "coco_panoptic_seg"]:
-            evaluator_list.append(
-                COCOEvaluatorWithAPandAR(dataset_name, output_dir=output_folder))
-        if evaluator_type == "coco_panoptic_seg":
-            evaluator_list.append(
-                COCOPanopticEvaluator(dataset_name, output_folder))
-        if evaluator_type == "cityscapes_instance":
-            assert (
-                    torch.cuda.device_count() >= comm.get_rank()
-            ), "CityscapesEvaluator currently " \
-               "do not work with multiple machines."
-            return CityscapesInstanceEvaluator(dataset_name)
-        if evaluator_type == "cityscapes_sem_seg":
-            assert (
-                    torch.cuda.device_count() >= comm.get_rank()
-            ), "CityscapesEvaluator currently " \
-               "do not work with multiple machines."
-            return CityscapesSemSegEvaluator(dataset_name)
-        elif evaluator_type == "pascal_voc":
-            return PascalVOCDetectionEvaluator(dataset_name)
-        elif evaluator_type == "lvis":
-            return LVISEvaluator(dataset_name, output_dir=output_folder)
+        evaluator_list.append(COCOEvaluatorWithAPandAR(dataset_name, output_dir=output_folder))
+        
         if len(evaluator_list) == 0:
             raise NotImplementedError(
-                "no Evaluator for the dataset {} with the type {}".format(
-                    dataset_name, evaluator_type
+                "no Evaluator for the dataset {}".format(
+                    dataset_name
                 )
             )
+        
         elif len(evaluator_list) == 1:
             return evaluator_list[0]
+        
         return DatasetEvaluators(evaluator_list)
 
     @classmethod
@@ -183,6 +140,8 @@ class Trainer(DefaultTrainer):
                 # Avoid duplicating parameters
                 if value in memo:
                     continue
+
+                cls.logger.info(f"{name}={value.requires_grad}")
                 memo.add(value)
                 lr = cfg.SOLVER.BASE_LR
                 weight_decay = cfg.SOLVER.WEIGHT_DECAY
@@ -201,10 +160,9 @@ class Trainer(DefaultTrainer):
 
     @classmethod
     def test_with_TTA(cls, cfg, model):
-        logger = logging.getLogger("detectron2.trainer")
         # In the end of training, run an evaluation with TTA
         # Only support some R-CNN models.
-        logger.info("Running inference with test-time augmentation ...")
+        cls.logger.info("Running inference with test-time augmentation ...")
         model = GeneralizedRCNNWithTTA(cfg, model)
         evaluators = [
             cls.build_evaluator(
@@ -234,8 +192,8 @@ class Trainer(DefaultTrainer):
         Args:
             start_iter, max_iter (int): See docs above
         """
-        logger = logging.getLogger("detectron2.trainer")
-        logger.info(f"Starting training from iteration {self.start_iter}. Evaluation will happen every {self.cfg.TEST.EVAL_PERIOD} iterations.")
+
+        self.logger.info(f"Starting training from iteration {self.start_iter}. Evaluation will happen every {self.cfg.TEST.EVAL_PERIOD} iterations.")
 
         self.stop_training = False
 
@@ -244,7 +202,7 @@ class Trainer(DefaultTrainer):
                 self.before_train()
                 for self.iter in range(self.start_iter, self.max_iter):
                     if self.stop_training:
-                        logger.info("Training is stopped due to EarlyStopping.")
+                        self.logger.info("Training is stopped due to EarlyStopping.")
                         break
                     self.before_step()
                     self.run_step()
@@ -254,18 +212,77 @@ class Trainer(DefaultTrainer):
                 # due to exceptions.
                 self.iter += 1
             except Exception:
-                logger.exception("Exception during training:")
+                self.logger.exception("Exception during training:")
                 raise
             finally:
                 self.after_train()
 
+    @classmethod
+    def build_model(cls, cfg):
+        """
+        Build YOLOF, then freeze backbone+encoder and re-init decoder.
+        Overrides DefaultTrainer.build_model.
+        """
+        model = super().build_model(cfg)          # builds YOLOF normally + moves to device
+        model = cls._freeze_and_reinit_decoder(model)
+        return model
+
+
     def resume_or_load(self, resume=False):
-        checkpoints = self.checkpointer.resume_or_load(self.cfg.MODEL.WEIGHTS, resume=resume)
+        checkpoints = self.checkpointer.resume_or_load(
+            self.cfg.MODEL.WEIGHTS, resume=resume
+        )
         if resume and self.checkpointer.has_checkpoint():
-            # The checkpoint stores the training iteration that just finished, thus we start
-            # at the next iteration
             self.iter = checkpoints.get("iteration", 0)
             self.start_iter = self.iter + 1
+
+        # Re-init decoder AFTER checkpoint load on fresh runs only.
+        # This overwrites the decoder weights the checkpoint just restored,
+        # guaranteeing the decoder always starts from random init.
+        if not resume:
+            self.model.decoder._init_weight()
+            self.logger.info(
+                "[FreezeReinit] Decoder re-initialised after checkpoint load."
+            )
+
+
+    @classmethod
+    def _freeze_and_reinit_decoder(cls, model):
+        """
+        Freeze backbone and encoder parameters.
+        Re-initialise decoder from scratch using its own _init_weight().
+        This ensures LMC/soup experiments compare models that differ only
+        in how the decoder converged from the same random distribution.
+        """
+
+        # 1. Freeze backbone
+        frozen_backbone = 0
+        for p in model.backbone.parameters():
+            p.requires_grad = False
+            frozen_backbone += p.numel()
+
+        # 2. Freeze encoder
+        frozen_encoder = 0
+        for p in model.encoder.parameters():
+            p.requires_grad = False
+            frozen_encoder += p.numel()
+
+        # 3. Re-initialise decoder from scratch
+        # _init_weight() is already defined on Decoder — it sets Conv2d weights to
+        # N(0, 0.01), BN/GN weights to 1/0, and cls_score.bias to prior_prob value.
+        model.decoder._init_weight()
+
+        # Make absolutely sure decoder parameters are trainable
+        trainable_decoder = 0
+        for p in model.decoder.parameters():
+            p.requires_grad = True
+            trainable_decoder += p.numel()
+
+        cls.logger.info(f"[FreezeReinit] Frozen backbone params : {frozen_backbone:,}")
+        cls.logger.info(f"[FreezeReinit] Frozen encoder params  : {frozen_encoder:,}")
+        cls.logger.info(f"[FreezeReinit] Trainable decoder params: {trainable_decoder:,}")
+        return model
+
 
 
 def setup(args):
@@ -280,10 +297,10 @@ def setup(args):
     thing_classes = []
 
     try:
-        TRAIN_ANN_FILE = f'{root_dir}/datasets/pascal-voc/train_2007+2012.json'
-        TRAIN_IMG_DIR = f'{root_dir}/datasets/pascal-voc/'
-        VAL_ANN_FILE = f'{root_dir}/datasets/pascal-voc/val_2007+2012.json'
-        VAL_IMG_DIR = f'{root_dir}/datasets/pascal-voc/'
+        TRAIN_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_train2017.json'
+        TRAIN_IMG_DIR = f'{root_dir}/datasets/coco/images/train2017'
+        VAL_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_val2017.json'
+        VAL_IMG_DIR = f'{root_dir}/datasets/coco/images/val2017'
 
         with open(TRAIN_ANN_FILE, "r") as r:
             thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
@@ -294,11 +311,11 @@ def setup(args):
         MetadataCatalog.get("coco2017_train").set(thing_classes=thing_classes)
         MetadataCatalog.get("coco2017_val").set(thing_classes=thing_classes)
 
-        print("Datasets registered successfully!")
-        print("Available datasets: {}".format(DatasetCatalog.list()))
+        logger.info("Datasets registered successfully!")
+        logger.info("Available datasets: {}".format(DatasetCatalog.list()))
 
     except Exception as e:
-        print(f"Error registering datasets: {e}")
+        logger.error(f"Error registering datasets: {e}")
 
     cfg = get_cfg()
     cfg.set_new_allowed(True)
@@ -310,7 +327,7 @@ def setup(args):
     warmup_iters = cfg.SOLVER.WARMUP_ITERS * iters2epoch
     steps = cfg.SOLVER.STEPS
 
-    cfg.MODEL.YOLOF.DECODER.NUM_CLASSES = len(thing_classes) | cfg.MODEL.YOLOF.DECODER.NUM_CLASSES
+    cfg.MODEL.YOLOF.DECODER.NUM_CLASSES = len(thing_classes) if len(thing_classes) > 0 else cfg.MODEL.YOLOF.DECODER.NUM_CLASSES
     cfg.MODEL.YOLOF.RETURN_VAL_LOSS = True
 
     cfg.DATASETS.TRAIN = ("coco2017_train",)
@@ -374,7 +391,7 @@ def main(args):
 
     for hook in trainer._hooks:
         if isinstance(hook, hooks.PeriodicWriter) and comm.is_main_process():
-            hook._writers.insert(-2, WandBWriter(cfg, project="Thesis"))
+            hook._writers.insert(-2, WandBWriter(cfg, project="Thesis", **to_dict(cfg.LOGGER.WANDB)))
 
     return trainer.train()
 
@@ -394,4 +411,7 @@ if __name__ == "__main__":
     )
 
 
-# python3 ./tools/train_net.py --num-gpus 1 --config-file configs/yolof_R_50_DC5_1x.yaml DATALOADER.NUM_WORKERS 4 DATALOADER.SAMPLER_TRAIN "RepeatFactorTrainingSampler" DATALOADER.REPEAT_THRESHOLD 0.05 SOLVER.IMS_PER_BATCH 8 SOLVER.WARMUP_ITERS 330 SOLVER.BASE_LR 0.01 SOLVER.MAX_ITER 33750 SOLVER.STEPS '(26250, 31250)' SOLVER.CHECKPOINT_PERIOD 3375 TEST.EVAL_PERIOD 3375 MODEL.WEIGHTS /kaggle/input/models/nisalchperera/yolof-resnet-50/pytorch/default/4/YOLOF_R50_DC5_1x.pth
+# python3 ./tools/train_net.py --num-gpus 1 --config-file configs/yolof_R_50_DC5_1x.yaml DATALOADER.NUM_WORKERS 4 
+# DATALOADER.SAMPLER_TRAIN "RepeatFactorTrainingSampler" DATALOADER.REPEAT_THRESHOLD 0.05 SOLVER.IMS_PER_BATCH 8 
+# SOLVER.WARMUP_ITERS 330 SOLVER.BASE_LR 0.01 SOLVER.MAX_ITER 33750 SOLVER.STEPS '(26250, 31250)' SOLVER.CHECKPOINT_PERIOD 3375 
+# TEST.EVAL_PERIOD 3375 MODEL.WEIGHTS /kaggle/input/models/nisalchperera/yolof-resnet-50/pytorch/default/4/YOLOF_R50_DC5_1x.pth
