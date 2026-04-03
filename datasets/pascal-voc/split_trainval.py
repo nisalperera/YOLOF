@@ -7,7 +7,7 @@ from pathlib import Path
 # Configuration
 # ============================================================================
 # Set to an integer (e.g., 42) for reproducible splits, or None for random
-SEED = 42
+SEED = None
 
 # Split ratio (0.9 = 90% train, 10% val)
 TRAIN_RATIO = 0.9
@@ -101,14 +101,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--train-output",
         type=str,
-        default=str(Path(__file__).parent / "trainval_2007+2012_train.json"),
-        help="Path to output train JSON file (default: trainval_2007+2012_train.json in script directory)",
+        default=str(Path(__file__).parent / "train_2007+2012.json"),
+        help="Path to output train JSON file (default: train_2007+2012.json in script directory)",
     )
     parser.add_argument(
         "--val-output",
         type=str,
-        default=str(Path(__file__).parent / "trainval_2007+2012_val.json"),
-        help="Path to output validation JSON file (default: trainval_2007+2012_val.json in script directory)",
+        default=str(Path(__file__).parent / "val_2007+2012.json"),
+        help="Path to output validation JSON file (default: val_2007+2012.json in script directory)",
     )
     
     args = parser.parse_args()

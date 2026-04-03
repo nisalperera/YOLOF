@@ -276,24 +276,14 @@ def setup(args):
     logger = logging.getLogger("detectron2.setup")
     root_dir = Path(__file__).resolve().parents[1]
 
-    # Define paths for your datasets (assuming they were created in previous steps)
-    TRAIN_ANN_FILE = '/kaggle/input/2017-2017/annotations_trainval2017/annotations/instances_train2017.json'
-    TRAIN_IMG_DIR = '/kaggle/input/2017-2017/train2017/train2017'
-    VAL_ANN_FILE = '/kaggle/input/2017-2017/annotations_trainval2017/annotations/instances_val2017.json'
-    VAL_IMG_DIR = '/kaggle/input/2017-2017/val2017/val2017'
-
-    # TRAIN_ANN_FILE = f'{root_dir}/datasets/damage_annotations_march25/train_annotations.json'
-    # TRAIN_IMG_DIR = f'{root_dir}/datasets/damage_annotations_march25'
-    # VAL_ANN_FILE = f'{root_dir}/datasets/damage_annotations_march25/val_annotations.json'
-    # VAL_IMG_DIR = f'{root_dir}/datasets/damage_annotations_march25'
-
+    # Define paths for your datasets (assuming they were created)
     thing_classes = []
 
     try:
-        # TRAIN_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_train2017.json'
-        # TRAIN_IMG_DIR = f'{root_dir}/datasets/coco/images/train2017'
-        # VAL_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_val2017.json'
-        # VAL_IMG_DIR = f'{root_dir}/datasets/coco/images/val2017'
+        TRAIN_ANN_FILE = f'{root_dir}/datasets/pascal-voc/train_2007+2012.json'
+        TRAIN_IMG_DIR = f'{root_dir}/datasets/pascal-voc/'
+        VAL_ANN_FILE = f'{root_dir}/datasets/pascal-voc/val_2007+2012.json'
+        VAL_IMG_DIR = f'{root_dir}/datasets/pascal-voc/'
 
         with open(TRAIN_ANN_FILE, "r") as r:
             thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
