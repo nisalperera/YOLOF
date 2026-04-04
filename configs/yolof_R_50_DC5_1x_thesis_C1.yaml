@@ -1,0 +1,27 @@
+_BASE_: "yolof_R_50_DC5_1x_thesis_base.yaml"
+
+SOLVER:
+  IMS_PER_BATCH: 16          # local default (overridden on cloud)
+  MAX_ITER: 12           # ~8 epochs if 1x ~90000, adjust to your schedule
+  WARMUP_ITERS: 1
+  STEPS: [0.66, 0.88]     # ≈ epochs 5 and 7 in an 8-epoch run
+  GAMMA: 0.1
+
+INPUT:
+  MIN_SIZE_TRAIN: (800,)
+  MAX_SIZE_TRAIN: 1333
+  MIN_SIZE_TEST: 800
+  MAX_SIZE_TEST: 1333
+
+TEST:
+  EVAL_PERIOD: 1
+
+DATALOADER:
+  NUM_WORKERS: 4
+
+LOGGER:
+  WANDB:
+    notes: "C1: Fine-tuning YOLOF R-50 DC5 for thesis experiments. Adjusted learning rate and schedule for 12 epochs, batch size 16."
+
+SEED: 31
+OUTPUT_DIR: "output/finetune_thesis_C1"

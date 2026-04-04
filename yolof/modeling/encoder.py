@@ -30,6 +30,7 @@ class DilatedEncoder(nn.Module):
         self.norm_type = cfg.MODEL.YOLOF.ENCODER.NORM
         self.act_type = cfg.MODEL.YOLOF.ENCODER.ACTIVATION
         self.use_se = cfg.MODEL.YOLOF.ENCODER.USE_SE
+        self.freeze_at = cfg.MODEL.YOLOF.ENCODER.FREEZE_AT
         # fmt: on
         assert input_shape[self.backbone_level].channels == self.in_channels
         assert len(self.block_dilations) == self.num_residual_blocks
@@ -62,7 +63,15 @@ class DilatedEncoder(nn.Module):
             )
         self.dilated_encoder_blocks = nn.Sequential(*encoder_blocks)
 
+        self._freeze_encoder()
+
     def _init_weight(self):
+        if self.freeze_at:
+            ValueError(
+                "Cannot re-initialise encoder weights when freezing is enabled. " \
+                "Please set FREEZE_AT to 0 in config to allow encoder learning and re-initialisation."
+            )
+
         c2_xavier_fill(self.lateral_conv)
         c2_xavier_fill(self.fpn_conv)
         for m in [self.lateral_norm, self.fpn_norm]:
@@ -77,6 +86,27 @@ class DilatedEncoder(nn.Module):
             if isinstance(m, (nn.GroupNorm, nn.BatchNorm2d, nn.SyncBatchNorm)):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
+
+    def _freeze_encoder(self):
+        if self.freeze_at == False or self.freeze_at == 0:
+            pass  # No freezing, allow all parameters to be updated during training
+
+        elif self.freeze_at == True or self.freeze_at == -1:
+            # Freeze entire encoder
+            self.lateral_conv.requires_grad_(False)
+            if self.lateral_norm is not None:
+                self.lateral_norm.requires_grad_(False)
+            self.fpn_conv.requires_grad_(False)
+            if self.fpn_norm is not None:
+                self.fpn_norm.requires_grad_(False)
+            self.dilated_encoder_blocks.requires_grad_(False)
+
+        else:
+            if self.freeze_at == True or self.freeze_at >= len(self.dilated_encoder_blocks):
+                self.dilated_encoder_blocks.requires_grad_(False)  # Freeze all dilated encoder blocks
+            else:    
+                for param in self.dilated_encoder_blocks[self.freeze_at:].parameters():
+                    param.requires_grad = False
 
     def forward(self, feature: torch.Tensor) -> torch.Tensor:
         out = self.lateral_norm(self.lateral_conv(feature))
