@@ -23,5 +23,5 @@ LOGGER:
   WANDB:
     notes: "C1: Fine-tuning YOLOF R-50 DC5 for thesis experiments. Adjusted learning rate and schedule for 12 epochs, batch size 16."
 
-SEED: 31
+SEED: 1337
 OUTPUT_DIR: "output/finetune_thesis_C1"
