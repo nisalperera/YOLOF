@@ -9,6 +9,12 @@ A simple, fast, and efficient object detector **without** FPN.
 
 ![image](images/yolof.png)
 
+## YOLOF Soup Experiments Guide
+
+For the thesis-oriented YOLOF soup workflow (Phase 3 to Phase 5, RQ1 and RQ3 scripts, run registry, outputs, and troubleshooting), see:
+
+- [yolof_soup/READE.md](yolof_soup/READE.md)
+
 ## Getting Started
 
 - Our project is developed on [detectron2](https://github.com/facebookresearch/detectron2). Please follow the official detectron2 [installation](https://github.com/facebookresearch/detectron2/blob/master/INSTALL.md). 

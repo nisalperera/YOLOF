@@ -12,9 +12,19 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
+from typing import Dict, cast
 
+import numpy as np
 import torch
+from torch import nn
 
+from yolof.analysis.model_soup import (
+    build_branch_weighted_soup_from_states,
+    build_soup,
+    fisher_branch_coefficients_from_traces,
+    uniform_branch_coefficients,
+)
 from yolof_soup.config.experiment_config import (
     BACKBONE_ENC_CKPT,
     DECODER_CKPT_PATHS,
@@ -29,6 +39,12 @@ from yolof_soup.config.experiment_config import (
     CONVERGE_TOL,
     DEVICE,
     build_eval_cfg,
+)
+from yolof_soup.config.experiment_registry import (
+    build_experiment_manifest,
+    ingredient_checkpoint_paths,
+    ingredient_run_ids,
+    validate_registry_specs,
 )
 from yolof_soup.utils import (
     # checkpoint I/O
@@ -47,11 +63,19 @@ from yolof_soup.utils import (
     apply_uniform_lambdas,
     apply_subhead_lambdas,
     # evaluation
+    build_eval_dataloader,
     get_map,
     compute_coco_map,
 )
 
 logger = logging.getLogger(__name__)
+
+M3_DIRICHLET_ALPHA = 1.0
+M3_NUM_SAMPLES = 64
+M3_RANDOM_SEED = 42
+M4_TRACE_METHOD = "pyhessian_hutchinson"
+M4_TRACE_FALLBACK = "state_dict_l2_proxy"
+M4_HESSIAN_MAX_ITERS = 50
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -218,6 +242,181 @@ def coordinate_descent_subhead(
     return lc, lr, best_map, history
 
 
+def random_dirichlet_search_subhead(
+    anchor_dec: dict,
+    taus: list,
+    cls_keys: list,
+    reg_keys: list,
+    shared_keys: list,
+    backbone_enc_state: dict,
+    device,
+    alpha: float = M3_DIRICHLET_ALPHA,
+    num_samples: int = M3_NUM_SAMPLES,
+    seed: int = M3_RANDOM_SEED,
+) -> tuple:
+    """
+    Condition M3: independent Dirichlet random simplex search for cls/reg.
+
+    Returns (best_lambdas_cls, best_lambdas_reg, best_map, search_log).
+    """
+    cfg = build_eval_cfg(SELECTION_DATASET)
+    n = len(taus)
+    rng = np.random.default_rng(seed)
+
+    best_lc = [1.0 / n] * n
+    best_lr = [1.0 / n] * n
+    best_map = float("-inf")
+    search_log = []
+
+    for sample_id in range(num_samples):
+        lc = rng.dirichlet(alpha=np.full(n, alpha)).tolist()
+        lr = rng.dirichlet(alpha=np.full(n, alpha)).tolist()
+        dec = apply_subhead_lambdas(
+            anchor_dec,
+            taus,
+            lc,
+            lr,
+            cls_keys,
+            reg_keys,
+            shared_keys,
+        )
+        full = assemble_full_state(backbone_enc_state, dec)
+        model = build_model_with_state(full, device)
+        m = get_map(model, cfg, SELECTION_DATASET)
+        search_log.append(
+            {
+                "sample_id": sample_id,
+                "lambdas_cls": lc,
+                "lambdas_reg": lr,
+                "selection_map": float(m),
+            }
+        )
+
+        if m > best_map:
+            best_map = m
+            best_lc = lc
+            best_lr = lr
+
+    return best_lc, best_lr, float(best_map), search_log
+
+
+def _trace_proxy_from_states(states: list, cls_keys: list, reg_keys: list) -> tuple:
+    """Fallback M4 proxy: branch scores from tensor squared norms."""
+    cls_traces = []
+    reg_traces = []
+    for sd in states:
+        cls_val = 0.0
+        reg_val = 0.0
+        for k in cls_keys:
+            if k in sd and torch.is_floating_point(sd[k]):
+                cls_val += float((sd[k].float() ** 2).sum().item())
+        for k in reg_keys:
+            if k in sd and torch.is_floating_point(sd[k]):
+                reg_val += float((sd[k].float() ** 2).sum().item())
+        cls_traces.append(cls_val)
+        reg_traces.append(reg_val)
+    return cls_traces, reg_traces
+
+
+def _extract_scalar_trace(trace_output) -> float:
+    """Handle pyhessian trace outputs that may be scalar/list/tuple."""
+    if isinstance(trace_output, (list, tuple)):
+        vals = [float(v) for v in trace_output]
+        return float(np.mean(vals)) if vals else 0.0
+    return float(trace_output)
+
+
+class _YOLOFLossWrapper(nn.Module):
+    """Adapter that exposes YOLOF validation losses as a scalar objective."""
+
+    def __init__(self, base_model: nn.Module):
+        super().__init__()
+        self.base_model = base_model
+
+    def forward(self, batch):
+        outputs = self.base_model(batch, return_val_loss=True)
+        if isinstance(outputs, dict):
+            losses = outputs.get("losses", outputs)
+        elif isinstance(outputs, list) and outputs and isinstance(outputs[0], dict):
+            first = outputs[0]
+            losses = first.get("losses", first)
+        else:
+            raise RuntimeError("Unexpected YOLOF loss output format")
+
+        loss_cls = losses.get("loss_cls", torch.tensor(0.0, device=next(self.base_model.parameters()).device))
+        loss_reg = losses.get("loss_box_reg", torch.tensor(0.0, device=next(self.base_model.parameters()).device))
+        return loss_cls + loss_reg
+
+
+def _set_trainable_by_key(model: nn.Module, allowed_keys: set[str]) -> None:
+    for name, param in model.named_parameters():
+        param.requires_grad = name in allowed_keys
+
+
+def branch_trace_from_pyhessian_or_proxy(
+    global_states: list,
+    cls_keys: list,
+    reg_keys: list,
+    cfg,
+    device,
+) -> tuple:
+    """Estimate per-model cls/reg traces via pyhessian, else fallback proxy."""
+    try:
+        from pyhessian import hessian as pyhessian_hessian
+
+        dataloader = build_eval_dataloader(cfg, SELECTION_DATASET)
+        batch = next(iter(dataloader))
+
+        def _to_device(x):
+            if isinstance(x, torch.Tensor):
+                return x.to(device)
+            if isinstance(x, dict):
+                return {k: _to_device(v) for k, v in x.items()}
+            if isinstance(x, list):
+                return [_to_device(v) for v in x]
+            if isinstance(x, tuple):
+                return tuple(_to_device(v) for v in x)
+            return x
+
+        batch = _to_device(batch)
+
+        cls_traces = []
+        reg_traces = []
+        for state in global_states:
+            model = build_model_with_state(state, device)
+            wrapped = _YOLOFLossWrapper(model)
+
+            _set_trainable_by_key(wrapped.base_model, set(cls_keys))
+            h_cls = pyhessian_hessian(
+                wrapped,
+                criterion=lambda out, _: out,
+                data=(batch, None),
+                cuda=(str(device).startswith("cuda")),
+            )
+            cls_trace = _extract_scalar_trace(h_cls.trace(maxIter=M4_HESSIAN_MAX_ITERS))
+
+            _set_trainable_by_key(wrapped.base_model, set(reg_keys))
+            h_reg = pyhessian_hessian(
+                wrapped,
+                criterion=lambda out, _: out,
+                data=(batch, None),
+                cuda=(str(device).startswith("cuda")),
+            )
+            reg_trace = _extract_scalar_trace(h_reg.trace(maxIter=M4_HESSIAN_MAX_ITERS))
+
+            cls_traces.append(cls_trace)
+            reg_traces.append(reg_trace)
+
+        coeffs = fisher_branch_coefficients_from_traces(cls_traces, reg_traces)
+        return coeffs, cls_traces, reg_traces, M4_TRACE_METHOD
+
+    except Exception as exc:
+        logger.warning("M4 pyhessian trace failed, falling back to proxy: %s", exc)
+        cls_traces, reg_traces = _trace_proxy_from_states(global_states, cls_keys, reg_keys)
+        coeffs = fisher_branch_coefficients_from_traces(cls_traces, reg_traces)
+        return coeffs, cls_traces, reg_traces, M4_TRACE_FALLBACK
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -225,8 +424,31 @@ def main():
     logger.info("Phase 3: Soup Construction & Evaluation")
     logger.info("=" * 60)
 
+    registry_errors = validate_registry_specs()
+    if registry_errors:
+        raise ValueError(f"Invalid experiment registry: {registry_errors}")
+
+    run_manifest = build_experiment_manifest(
+        decoder_paths=DECODER_CKPT_PATHS,
+        global_paths=GLOBAL_CKPT_PATHS,
+        checkpoint_dir=str(CHECKPOINT_DIR),
+    )
+    ingredient_ids = ingredient_run_ids()
+    decoder_paths = ingredient_checkpoint_paths(DECODER_CKPT_PATHS)
+    run_manifest_runs = cast(Dict[str, Dict[str, object]], run_manifest["runs"])
+    global_paths = [
+        Path(str(run_manifest_runs[run_id]["global_checkpoint"]))
+        for run_id in ingredient_ids
+    ]
+
+    manifest_out = f"{RESULTS_DIR}/experiment_run_manifest.json"
+    with open(manifest_out, "w") as f:
+        json.dump(run_manifest, f, indent=2)
+    logger.info("Run manifest saved → %s", manifest_out)
+
     backbone_enc_state = load_state(BACKBONE_ENC_CKPT)
-    decoder_states     = load_states(DECODER_CKPT_PATHS)
+    decoder_states     = load_states(decoder_paths)
+    global_states      = load_states(cast(list[str | Path], global_paths))
     decoder_keys       = get_decoder_keys(decoder_states[0])
     cls_keys, reg_keys, shared_keys = split_decoder_subheads(decoder_keys)
 
@@ -290,13 +512,109 @@ def main():
 
     # ── Global uniform soup (backbone NOT frozen) ──────────
     logger.info("\n--- Global Uniform Soup ---")
-    global_states  = load_states(GLOBAL_CKPT_PATHS)
-    global_anchor  = compute_anchor(global_states)
-    model          = build_model_with_state(global_anchor, DEVICE)
-    global_unif_m  = compute_coco_map(model, cfg_eval, EVAL_DATASET,
-                                       RESULTS_DIR, tag="uniform_global")
-    results["uniform_global"] = global_unif_m
-    logger.info("Global uniform mAP: %.4f", global_unif_m["AP"])
+    m1_global = build_soup(
+        checkpoint_paths=cast(list[str | Path], global_paths),
+        strategy="full",
+    )
+    model       = build_model_with_state(m1_global, DEVICE)
+    m1_global_m = compute_coco_map(
+        model,
+        cfg_eval,
+        EVAL_DATASET,
+        RESULTS_DIR,
+        tag="condition_m1_global_uniform",
+    )
+    results["m1_global_uniform"] = m1_global_m
+    results["uniform_global"] = m1_global_m
+
+    logger.info("\n--- Condition M2 Branch Uniform Soup ---")
+    m2_branch = build_soup(
+        checkpoint_paths=cast(list[str | Path], global_paths),
+        strategy="branch_uniform",
+    )
+    model       = build_model_with_state(m2_branch, DEVICE)
+    m2_branch_m = compute_coco_map(
+        model,
+        cfg_eval,
+        EVAL_DATASET,
+        RESULTS_DIR,
+        tag="condition_m2_branch_uniform",
+    )
+    results["m2_branch_uniform"] = m2_branch_m
+    results["m2_coefficients"] = uniform_branch_coefficients(len(global_paths))
+
+    logger.info("\n--- Condition M3 Branch Dirichlet Search ---")
+    m3_lc, m3_lr, m3_sel_map, m3_search_log = random_dirichlet_search_subhead(
+        anchor_dec=anchor_dec,
+        taus=taus,
+        cls_keys=cls_keys,
+        reg_keys=reg_keys,
+        shared_keys=shared_keys,
+        backbone_enc_state=backbone_enc_state,
+        device=DEVICE,
+    )
+    m3_dec = apply_subhead_lambdas(
+        anchor_dec,
+        taus,
+        m3_lc,
+        m3_lr,
+        cls_keys,
+        reg_keys,
+        shared_keys,
+    )
+    m3_full = assemble_full_state(backbone_enc_state, m3_dec)
+    model = build_model_with_state(m3_full, DEVICE)
+    m3_branch_m = compute_coco_map(
+        model,
+        cfg_eval,
+        EVAL_DATASET,
+        RESULTS_DIR,
+        tag="condition_m3_branch_dirichlet",
+    )
+    results["m3_branch_dirichlet"] = m3_branch_m
+    results["m3_coefficients"] = {
+        "cls": m3_lc,
+        "reg": m3_lr,
+        "selection_map": m3_sel_map,
+        "alpha": M3_DIRICHLET_ALPHA,
+        "num_samples": M3_NUM_SAMPLES,
+        "seed": M3_RANDOM_SEED,
+    }
+    results["m3_search_log"] = m3_search_log
+
+    logger.info("\n--- Condition M4 Branch Fisher-Weighted Soup ---")
+    m4_coeffs, m4_cls_traces, m4_reg_traces, m4_trace_method = branch_trace_from_pyhessian_or_proxy(
+        global_states=global_states,
+        cls_keys=cls_keys,
+        reg_keys=reg_keys,
+        cfg=cfg_eval,
+        device=DEVICE,
+    )
+    m4_soup = build_branch_weighted_soup_from_states(global_states, m4_coeffs)
+    model = build_model_with_state(m4_soup, DEVICE)
+    m4_branch_m = compute_coco_map(
+        model,
+        cfg_eval,
+        EVAL_DATASET,
+        RESULTS_DIR,
+        tag="condition_m4_branch_fisher",
+    )
+    results["m4_branch_fisher"] = m4_branch_m
+    results["m4_coefficients"] = {
+        "coefficients": m4_coeffs,
+        "cls_traces": m4_cls_traces,
+        "reg_traces": m4_reg_traces,
+        "trace_method": m4_trace_method,
+    }
+
+    results["registry"] = {
+        "ingredient_run_ids": ingredient_ids,
+        "manifest": manifest_out,
+    }
+    logger.info("M1 global uniform mAP: %.4f", m1_global_m["AP"])
+    logger.info("M2 branch uniform mAP: %.4f", m2_branch_m["AP"])
+    logger.info("M3 branch dirichlet mAP: %.4f", m3_branch_m["AP"])
+    logger.info("M4 branch fisher mAP: %.4f", m4_branch_m["AP"])
 
     # ── Persist ────────────────────────────────────────────
     out = f"{RESULTS_DIR}/phase3_soup_results.json"
@@ -312,8 +630,46 @@ def main():
     )
     save_checkpoint(
         f"{CHECKPOINT_DIR}/global_uniform_soup.pth",
-        global_anchor,
-        metadata=dict(metrics=global_unif_m, phase="3"),
+        m1_global,
+        metadata=dict(metrics=m1_global_m, phase="3", condition_id="M1"),
+    )
+    save_checkpoint(
+        f"{CHECKPOINT_DIR}/branch_uniform_soup.pth",
+        m2_branch,
+        metadata=dict(
+            metrics=m2_branch_m,
+            phase="3",
+            condition_id="M2",
+            coefficients=uniform_branch_coefficients(len(global_paths)),
+        ),
+    )
+    save_checkpoint(
+        f"{CHECKPOINT_DIR}/branch_dirichlet_soup.pth",
+        m3_full,
+        metadata=dict(
+            metrics=m3_branch_m,
+            phase="3",
+            condition_id="M3",
+            lambdas_cls=m3_lc,
+            lambdas_reg=m3_lr,
+            selection_map=m3_sel_map,
+            alpha=M3_DIRICHLET_ALPHA,
+            num_samples=M3_NUM_SAMPLES,
+            seed=M3_RANDOM_SEED,
+        ),
+    )
+    save_checkpoint(
+        f"{CHECKPOINT_DIR}/branch_fisher_soup.pth",
+        m4_soup,
+        metadata=dict(
+            metrics=m4_branch_m,
+            phase="3",
+            condition_id="M4",
+            coefficients=m4_coeffs,
+            cls_traces=m4_cls_traces,
+            reg_traces=m4_reg_traces,
+            trace_method=m4_trace_method,
+        ),
     )
     logger.info("Phase 3 complete.")
 
