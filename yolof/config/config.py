@@ -32,8 +32,9 @@ def to_dict(cfg: CfgNode, key_list=[], lowercase_key=False) -> dict:
         )
         return cfg
     else:
-        cfg_dict = dict(cfg)
-        for k, v in cfg_dict.items():
+        _cfg_dict = dict(cfg)
+        cfg_dict = {}
+        for k, v in _cfg_dict.items():
             if lowercase_key:
                 k = k.lower()
             cfg_dict[k] = to_dict(v, key_list + [k])
