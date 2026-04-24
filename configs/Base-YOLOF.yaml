@@ -26,5 +26,5 @@ INPUT:
 LOGGER:
   WANDB:
     ENABLED: True
-    PROJECT: "YOLOF"
+    PROJECT: "Thesis"
     NAME: "default"

@@ -22,7 +22,8 @@ DATALOADER:
 
 LOGGER:
   WANDB:
-    notes: "C1: Fine-tuning YOLOF R-50 DC5 for thesis experiments. Adjusted Learning Rate and Batch Size for 8 epochs."
+    NOTES: "C1: Fine-tuning YOLOF R-50 DC5 for thesis experiments. Adjusted Learning Rate and Batch Size for 8 epochs."
+    NAME: C1
 
 SEED: 1337
 OUTPUT_DIR: "output/finetune_thesis_C1"
