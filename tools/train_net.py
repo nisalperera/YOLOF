@@ -141,7 +141,6 @@ class Trainer(DefaultTrainer):
                 if value in memo:
                     continue
 
-                cls.logger.info(f"{name}={value.requires_grad}")
                 memo.add(value)
                 lr = cfg.SOLVER.BASE_LR
                 weight_decay = cfg.SOLVER.WEIGHT_DECAY
