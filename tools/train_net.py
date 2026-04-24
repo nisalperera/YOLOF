@@ -391,7 +391,7 @@ def main(args):
 
     for hook in trainer._hooks:
         if isinstance(hook, hooks.PeriodicWriter) and comm.is_main_process():
-            hook._writers.insert(-2, WandBWriter(cfg, project="Thesis", **to_dict(cfg.LOGGER.WANDB)))
+            hook._writers.insert(-2, WandBWriter(cfg, project="Thesis"))
 
     return trainer.train()
 
