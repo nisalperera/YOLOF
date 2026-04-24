@@ -258,28 +258,28 @@ class Trainer(DefaultTrainer):
         # 1. Freeze backbone
         frozen_backbone = 0
         for p in model.backbone.parameters():
-            p.requires_grad = False
-            frozen_backbone += p.numel()
+            if not p.requires_grad:
+                frozen_backbone += p.numel()
 
         # 2. Freeze encoder
         frozen_encoder = 0
         for p in model.encoder.parameters():
-            p.requires_grad = False
-            frozen_encoder += p.numel()
+            if not p.requires_grad:
+                frozen_encoder += p.numel()
 
         # 3. Re-initialise decoder from scratch
         # _init_weight() is already defined on Decoder — it sets Conv2d weights to
         # N(0, 0.01), BN/GN weights to 1/0, and cls_score.bias to prior_prob value.
 
         # Make absolutely sure decoder parameters are trainable
-        trainable_decoder = 0
+        frozen_decoder = 0
         for p in model.decoder.parameters():
-            p.requires_grad = True
-            trainable_decoder += p.numel()
+            if not p.requires_grad:
+                frozen_decoder += p.numel()
 
         cls.logger.info(f"[FreezeReinit] Frozen backbone params : {frozen_backbone:,}")
         cls.logger.info(f"[FreezeReinit] Frozen encoder params  : {frozen_encoder:,}")
-        cls.logger.info(f"[FreezeReinit] Trainable decoder params: {trainable_decoder:,}")
+        cls.logger.info(f"[FreezeReinit] Frozen decoder params: {frozen_decoder:,}")
         return model
 
 
