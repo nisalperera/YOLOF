@@ -270,7 +270,6 @@ class Trainer(DefaultTrainer):
         # 3. Re-initialise decoder from scratch
         # _init_weight() is already defined on Decoder — it sets Conv2d weights to
         # N(0, 0.01), BN/GN weights to 1/0, and cls_score.bias to prior_prob value.
-        model.decoder._init_weight()
 
         # Make absolutely sure decoder parameters are trainable
         trainable_decoder = 0
