@@ -3,6 +3,11 @@ _BASE_: "yolof_R_50_DC5_1x.yaml"
 MODEL:
   BACKBONE:
     FREEZE_AT: 0  # fine-tune all backbone stages
+  YOLOF:
+    DECODER:
+      FREEZE_AT: 0
+    ENCODER:
+      FREEZE_AT: 0
 
 SOLVER:
   OPTIMIZER: "SGD"

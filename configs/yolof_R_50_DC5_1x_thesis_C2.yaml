@@ -6,10 +6,12 @@ SOLVER:
   WARMUP_ITERS: 1
   STEPS: [0.66, 0.88]     # ≈ epochs 5 and 7 in an 8-epoch run
   GAMMA: 0.1
+  BASE_LR: 0.02
+  LR_SCHEDULER_NAME: "WarmupCosineLR"
 
 LOGGER:
   WANDB:
-    notes: "C2: Fine-tuning YOLOF R-50 DC5 for thesis experiments. Adjusted learning rate and schedule for 12 epochs, batch size 16."
+    notes: "C2: Fine-tuning YOLOF R-50 DC5 for thesis experiments. Adjusted LR Scheduler for 8 epochs."
 
 SEED: 9999
 OUTPUT_DIR: "output/finetune_thesis_C2"

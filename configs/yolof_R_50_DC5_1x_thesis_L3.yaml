@@ -6,10 +6,11 @@ SOLVER:
   WARMUP_ITERS: 1
   STEPS: [0.66, 0.88]     # ≈ epochs 5 and 7 in an 8-epoch run
   GAMMA: 0.1
+  WEIGHT_DECAY: 0.0005
 
 LOGGER:
   WANDB:
-    notes: "L3: Fine-tuning YOLOF R-50 DC5 for thesis experiments. Adjusted learning rate and schedule for 8 epochs."
+    notes: "L3: Fine-tuning YOLOF R-50 DC5 for thesis experiments. Adjusted Weight Decay for 8 epochs."
 
 SEED: 271
 OUTPUT_DIR: "output/finetune_thesis_L3"

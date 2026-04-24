@@ -9,7 +9,7 @@ SOLVER:
 
 LOGGER:
   WANDB:
-    notes: "L1: Fine-tuning YOLOF R-50 DC5 for thesis experiments. Adjusted learning rate and schedule for 8 epochs."
+    notes: "L1: Fine-tuning YOLOF R-50 DC5 for thesis experiments. Reference Model."
 
 SEED: 41
 OUTPUT_DIR: "output/finetune_thesis_L1"
