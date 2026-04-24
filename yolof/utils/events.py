@@ -38,7 +38,9 @@ class WandBWriter(EventWriter):
         else:
             self._cfg = get_cfg()
 
+        
         self._writer_args = {"dir": cfg.OUTPUT_DIR, "config": to_dict(self._cfg), **to_dict(cfg.LOGGER.WANDB, lowercase_key=True), **kwargs}
+        self._writer_args.pop("enabled", None)  # Remove 'enabled' from args since it's handled separately
         self._enabled = cfg.LOGGER.WANDB.ENABLED
 
     @cached_property
