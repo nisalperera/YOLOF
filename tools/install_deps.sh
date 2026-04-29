@@ -38,9 +38,17 @@ apt update && apt install -y --no-install-recommends \
     openssh-client \
     ninja-build
 
-python3 -m pip install 'git+https://github.com/JunnYu/mish-cuda.git' --no-build-isolation
-python3 -m pip install 'git+https://github.com/facebookresearch/detectron2.git' --no-build-isolation
+python3 -m pip install 'git+https://github.com/JunnYu/mish-cuda.git' \
+    'git+https://github.com/facebookresearch/detectron2.git' \
+    --no-build-isolation
 
-wget https://raw.githubusercontent.com/nisalperera/YOLOF/refs/heads/hyperparam_sweep/requirements.txt
+current_branch="$(git branch --show-current)"
+if [ -z "$current_branch" ] || [ "$current_branch" = "HEAD" ]; then
+    current_branch="$(git rev-parse --abbrev-ref HEAD)"
+fi
+
+wget "https://raw.githubusercontent.com/nisalperera/YOLOF/refs/heads/${current_branch}/requirements.txt"
 
 python3 -m pip install -r requirements.txt
+
+python3 -m pip install -e .

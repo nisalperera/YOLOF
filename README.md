@@ -13,7 +13,7 @@ A simple, fast, and efficient object detector **without** FPN.
 
 For the thesis-oriented YOLOF soup workflow (Phase 3 to Phase 5, RQ1 and RQ3 scripts, run registry, outputs, and troubleshooting), see:
 
-- [yolof_soup/READE.md](yolof_soup/READE.md)
+- [yolof_soup/README.md](yolof_soup/README.md)
 
 ## Getting Started
 
