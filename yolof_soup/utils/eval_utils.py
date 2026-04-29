@@ -92,6 +92,60 @@ def get_map(
     return float(compute_coco_map(model, cfg, dataset_name, output_dir, tag).get("AP", 0.0))
 
 
+def extract_per_class_ap(
+    results_dict: Dict[str, float],
+    n_classes: int = 80,
+) -> list[float]:
+    """
+    Extract per-class AP values from COCO evaluator results dict.
+    
+    The evaluator stores results as "AP-{class_id}" for each of 80 COCO classes.
+    This function extracts them in order (0-79) and returns as a list.
+    
+    Args:
+        results_dict: Dict returned from compute_coco_map() containing AP values
+        n_classes: Number of COCO classes (default 80)
+    
+    Returns:
+        List of float AP values, one per class (indices 0-79)
+        Missing classes are filled with 0.0
+    """
+    per_class_ap = []
+    for class_idx in range(n_classes):
+        # Try to find AP-{class_idx} key
+        key = f"AP-{class_idx}"
+        ap_val = results_dict.get(key, 0.0)
+        per_class_ap.append(float(ap_val))
+    
+    # If no AP-{class_idx} keys found, try AP-{class_name} keys
+    if all(ap == 0.0 for ap in per_class_ap):
+        # Build list from class names if available
+        logger.debug("No AP-{class_idx} keys found in results; trying AP-{class_name} keys")
+        from detectron2.data import MetadataCatalog
+        try:
+            # Try to get COCO class names
+            # This assumes the dataset is registered with Detectron2
+            # For COCO, class names are stored in MetadataCatalog
+            coco_classes = [
+                "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+                "fire hydrant", "stop sign", "parking meter", "bench", "cat", "dog", "horse", "sheep", "cow", "elephant",
+                "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis",
+                "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle", "wine glass",
+                "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange", "broccoli",
+                "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch", "potted plant", "bed", "dining table",
+                "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "microwave", "oven", "toaster", "sink",
+                "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush", "??", "??"
+            ]
+            for class_idx, class_name in enumerate(coco_classes[:n_classes]):
+                key = f"AP-{class_name}"
+                ap_val = results_dict.get(key, 0.0)
+                per_class_ap[class_idx] = float(ap_val)
+        except Exception as e:
+            logger.warning("Failed to extract per-class AP from results: %s", str(e))
+    
+    return per_class_ap
+
+
 def quick_loss(
     model: torch.nn.Module,
     dataloader,
