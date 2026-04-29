@@ -4,16 +4,17 @@
     "context": "${localWorkspaceFolder}",
     "dockerfile": "${localWorkspaceFolder}/docker/Dockerfile",
     "args": {
-      "UID": "${localEnv:UID:1000}",
-      "GID": "${localEnv:GID:1000}",
+      "UID": "${localEnv:USER_ID}",
+      "GID": "${localEnv:GROUP_ID}",
       "USER": "${localEnv:USER:ubuntu}"
     }
   },
-  "workspaceFolder": "/home/${localEnv:USER:ubuntu}/YOLOF",
-  "remoteUser": "${localEnv:USER:ubuntu}",
+  "workspaceFolder": "/home/${localEnv:USER}/YOLOF",
+  "remoteUser": "${localEnv:USER}",
+  "updateRemoteUserUID": false,
   "containerEnv": {
-    "HOME": "/home/${localEnv:USER:ubuntu}",
-    "USER": "${localEnv:USER:ubuntu}"
+    "HOME": "/home/${localEnv:USER}",
+    "USER": "${localEnv:USER}"
   },
   "runArgs": [
     "--network=host",
@@ -23,15 +24,18 @@
     "--name=YOLOF"
   ],
   "mounts": [
-    "source=${localEnv:HOME}/Projects/personal/data/,target=/home/${localEnv:USER:ubuntu}/YOLOF/datasets/,type=bind"
+    "source=${localEnv:HOME}/Projects/personal/data/,target=/home/${localEnv:USER:ubuntu}/YOLOF/datasets/,type=bind",
+    "source=${localEnv:HOME}/Projects/personal/models/,target=/home/${localEnv:USER:ubuntu}/YOLOF/models/,type=bind",
+    "source=${localEnv:HOME}/Projects/personal/output/,target=/home/${localEnv:USER:ubuntu}/YOLOF/output/,type=bind"
+    
   ],
   "customizations": {
     "vscode": {
       "extensions": [
-        "ms-python.python@2025.14.0",
-        "ms-toolsai.jupyter@2025.6.0",
-        "ms-python.debugpy@2025.10.0",
-        "njpwerner.autodocstring@0.6.1"
+        "ms-python.python",
+        "ms-toolsai.jupyter",
+        "ms-python.debugpy",
+        "njpwerner.autodocstring"
       ]
     }
   },

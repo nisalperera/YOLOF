@@ -7,8 +7,12 @@ MODEL:
   YOLOF:
     ENCODER:
       BLOCK_DILATIONS: [4, 8, 12, 16]
+      FREEZE_AT: 0  # Set to 0 to unfreeze encoder during fine-tuning, number to allow it to learn layers after the specified layer
+                    # or set to -1 to freeze the entire encoder and prevent it from learning during fine-tuning
     DECODER:
       NUM_ANCHORS: 6
+      FREEZE_AT: 0  # Set to 0 to unfreeze decoder during fine-tuning, number to allow it to learn layers after the specified layer
+                    # cannot freeze the entire decoder as it contains the prediction heads which need to learn during fine-tuning
     MATCHER:
       TOPK: 8
     POS_IGNORE_THRESHOLD: 0.1

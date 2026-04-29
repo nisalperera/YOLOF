@@ -27,7 +27,7 @@ class GradCAMHook(HookBase):
     Custom Detectron2 Hook to compute Grad-CAM after each training iteration
     and log the visualizations to TensorBoard.
     """
-    def __init__(self, target_layer_name, cfg):
+    def __init__(self, cfg):
         """
         Args:
             model: Detectron2 GeneralizedRCNN model.
@@ -38,7 +38,7 @@ class GradCAMHook(HookBase):
         self.cfg = cfg
         self.grad_cam = None
         self.eval_dataloader = []
-        self.target_layer_name = target_layer_name
+        self.target_layer_name = cfg.TEST.GRADCAM.LAYER_NAME
         self.eval_period = cfg.SOLVER.CHECKPOINT_PERIOD
         self.logger = setup_logger(output=cfg.OUTPUT_DIR, name="d2.yolof.grad_cam")
 

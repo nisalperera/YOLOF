@@ -259,7 +259,7 @@ class YOLOF(nn.Module):
                    f"Bottom: {max_boxes} Highest Scoring Results"
         storage.put_image(vis_name, vis_img)
 
-    def forward(self, batched_inputs: Tuple[Dict[str, Tensor]]):
+    def forward(self, batched_inputs: Tuple[Dict[str, Tensor]], return_val_loss=False):
         """
         Args:
             batched_inputs: a list, batched outputs of :class:`DatasetMapper` .
@@ -317,7 +317,7 @@ class YOLOF(nn.Module):
             return losses
         else:
             losses = None
-            if self.return_val_loss:
+            if self.return_val_loss or return_val_loss:
                 # If we are in validation mode, we return the results
                 # and the losses for logging purposes.
                 gt_instances = []
@@ -354,11 +354,6 @@ class YOLOF(nn.Module):
                     processed_results.append({
                         "instances": r, 
                         "losses": losses,  # Include losses for logging
-                        # "anchors": anchors, 
-                        # "pred_anchor_deltas": pred_anchor_deltas, 
-                        # "pred_logits": pred_logits,
-                        # "anchor_matcher": self.anchor_matcher,
-                        # "box2box_transform": self.box2box_transform
                     })
                 else:
                     processed_results.append({"instances": r})

@@ -1,6 +1,9 @@
 ARG CUDA_VERSION=12.8.1
 FROM nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu22.04
 
+# Re-declare build arg after FROM so it is available in this stage.
+ARG CUDA_VERSION
+
 LABEL maintainer="Nisal Perera"
 
 ENV CUDNN_VERSION=9.3.0.77
@@ -11,11 +14,13 @@ ENV TORCH_NVCC_FLAGS="-Xfatbin -compress-all"
 ENV CUDA_VERSION=${CUDA_VERSION}
 ENV TORCH_VERSION=2.8.0
 ENV TORCHVISION_VERSION=0.23.0
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Create non-root user early (as root)
 ARG USER=ubuntu
 ARG UID=1000
-ARG GID=$UID
+ARG GID=1000
+ENV USER=${USER} UID=${UID} GID=${GID}
 
 RUN groupadd --gid $GID $USER && \
     useradd -s /bin/bash --uid $UID --gid $GID -m $USER && \
@@ -53,7 +58,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gfortran \
     libjpeg-turbo8-dev \
     zlib1g-dev \
-    libtiff5-dev \
     liblcms2-dev \
     libfreetype6-dev \
     libwebp-dev \
@@ -68,6 +72,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libdc1394-dev \
     openssh-client \
     ninja-build \
+    unzip \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Switch to non-root user for application setup
@@ -76,14 +81,32 @@ ARG HOME=/home/${USER}
 ENV HOME=${HOME}
 WORKDIR ${HOME}
 
+COPY wheels/ ${HOME}/tmp/
+
+RUN if [ -f "${HOME}/tmp/pytorch_wheels.zip" ]; then \
+        sudo mkdir -p "${HOME}/tmp/pytorch_wheels" && \
+        sudo unzip -o "${HOME}/tmp/pytorch_wheels.zip" -d "${HOME}/tmp/pytorch_wheels"; \
+    fi
+
+RUN if [ -f "${HOME}/tmp/wheels.zip" ]; then \
+        sudo mkdir -p "${HOME}/tmp/wheels" && \
+        sudo unzip -o "${HOME}/tmp/wheels.zip" -d "${HOME}/tmp/wheels"; \
+    fi
+
 # Install PyTorch (as non-root user)
 SHELL ["/bin/bash", "-c"]
 RUN IFS='.' read -r MAJOR MINOR _ <<< "$CUDA_VERSION" && \
     CUDA_VERSION_NO_DOT="${MAJOR}${MINOR}" && \
-    python3 -m pip install --no-cache-dir \
-        torch==${TORCH_VERSION}+cu${CUDA_VERSION_NO_DOT} \
-        torchvision==${TORCHVISION_VERSION}+cu${CUDA_VERSION_NO_DOT} \
-        --index-url https://download.pytorch.org/whl/cu${CUDA_VERSION_NO_DOT}
+    if [ -d "${HOME}/tmp/pytorch_wheels" ] && compgen -G "${HOME}/tmp/pytorch_wheels/*.whl" > /dev/null; then \
+        python3 -m pip install --no-cache-dir --no-index --find-links "${HOME}/tmp/pytorch_wheels" \
+            torch==${TORCH_VERSION}+cu${CUDA_VERSION_NO_DOT} \
+            torchvision==${TORCHVISION_VERSION}+cu${CUDA_VERSION_NO_DOT}; \
+    else \
+        python3 -m pip install --no-cache-dir \
+            torch==${TORCH_VERSION}+cu${CUDA_VERSION_NO_DOT} \
+            torchvision==${TORCHVISION_VERSION}+cu${CUDA_VERSION_NO_DOT} \
+            --index-url https://download.pytorch.org/whl/cu${CUDA_VERSION_NO_DOT}; \
+    fi
 SHELL ["/bin/sh", "-c"]
 
 # Install Python dependencies from git repos
@@ -95,11 +118,18 @@ RUN python3 -m pip uninstall pillow -y && \
     CC="cc -mavx2" python3 -m pip install -U --force-reinstall pillow-simd
 
 # Install requirements.txt BEFORE copying code (better caching)
-COPY --chown=${UID}:${GID} requirements.txt /tmp/requirements.txt
-RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.txt
+COPY  --chown=${UID}:${GID} requirements.txt /tmp/requirements.txt
+# RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.txt
+
+RUN if [ -d "${HOME}/tmp/wheels" ] && compgen -G "${HOME}/tmp/wheels/*.whl" > /dev/null; then \
+        python3 -m pip install --no-cache-dir --no-index --find-links "${HOME}/tmp/wheels" \
+        -r /tmp/requirements.txt; \
+    else \
+        python3 -m pip install --no-cache-dir -r /tmp/requirements.txt; \
+    fi
 
 # Copy application code (use --chown to avoid extra layer)
-COPY --chown=${UID}:${GID} . ${HOME}/YOLOF
+COPY  --chown=${UID}:${GID} . ${HOME}/YOLOF
 
 # Install YOLOF package
 RUN python3 -m pip install --no-cache-dir -e ${HOME}/YOLOF

@@ -1,7 +1,7 @@
 #!/bin/bash
 # download_coco2017_fast.sh - MAX 16-chunk parallel download (aria2c limit)
 # sudo dnf install aria2
-# Usage: chmod +x download_coco2017_fast.sh && ./download_coco2017_fast.sh
+# Usage: chmod +x download_coco_fast.sh && ./download_coco2017_fast.sh
 
 set -e
 
@@ -14,7 +14,7 @@ export DETECTRON2_DATASETS=${DETECTRON2_DATASETS:-./datasets}
 echo "DETECTRON2_DATASETS=$DETECTRON2_DATASETS"
 
 DATASET_ROOT="$DETECTRON2_DATASETS/coco"
-mkdir -p $DATASET_ROOT/{images/train2017,images/val2017,annotations}
+mkdir -p $DATASET_ROOT/{images/train,images/val,annotations}
 
 download_parallel() {
     local url=$1

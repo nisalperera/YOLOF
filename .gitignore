@@ -130,5 +130,8 @@ dmypy.json
 
 .idea/
 
+markdown/
 output/
 wandb/
+datasets/coco2017/
+datasets/damage_annotations_march25/

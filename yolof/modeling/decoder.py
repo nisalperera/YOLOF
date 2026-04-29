@@ -30,6 +30,7 @@ class Decoder(nn.Module):
         self.act_type = cfg.MODEL.YOLOF.DECODER.ACTIVATION
         self.prior_prob = cfg.MODEL.YOLOF.DECODER.PRIOR_PROB
         self.use_se = cfg.MODEL.YOLOF.DECODER.USE_SE
+        self.freeze_at = cfg.MODEL.YOLOF.DECODER.FREEZE_AT
         # fmt: on
 
         self.INF = 1e8
@@ -82,7 +83,15 @@ class Decoder(nn.Module):
             self.in_channels, self.num_anchors, kernel_size=3, stride=1, padding=1
         )
 
+        self._freeze_decoder()
+
     def _init_weight(self):
+        if self.freeze_at:
+            ValueError(
+                "Cannot re-initialise decoder weights when freezing is enabled. " \
+                "Please set FREEZE_AT to 0 in config to allow decoder learning and re-initialisation."
+            )
+
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.normal_(m.weight, mean=0, std=0.01)
@@ -96,6 +105,29 @@ class Decoder(nn.Module):
         # Use prior in model initialization to improve stability
         bias_value = -math.log((1 - self.prior_prob) / self.prior_prob)
         torch.nn.init.constant_(self.cls_score.bias, bias_value)
+
+    def _freeze_decoder(self):
+
+        if self.freeze_at == 0:
+            pass  # No freezing, allow all parameters to be updated during training
+        elif self.freeze_at == -1:
+            ValueError("Cannot freeze decoder when FREEZE_AT is set to -1.")
+        else:
+            if self.freeze_at >= 1:
+                for p in self.cls_subnet.parameters():
+                    p.requires_grad = False
+                for p in self.bbox_subnet.parameters():
+                    p.requires_grad = False
+
+            if self.freeze_at == 2:
+                for p in self.cls_score.parameters():
+                    p.requires_grad = False
+
+            if self.freeze_at == 3:
+                for p in self.bbox_pred.parameters():
+                    p.requires_grad = False
+                for p in self.object_pred.parameters():
+                    p.requires_grad = False
 
     def forward(self, feature: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         cls_score = self.cls_score(self.cls_subnet(feature))
