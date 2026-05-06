@@ -52,7 +52,7 @@ def build_eval_dataloader(cfg, dataset_name: Optional[str] = None):
 
 
 def compute_coco_map(
-    model: torch.nn.Module,
+    model,
     cfg,
     dataset_name: str,
     output_dir: str | Path,
@@ -94,7 +94,7 @@ def get_map(
 
 def extract_per_class_ap(
     results_dict: Dict[str, float],
-    n_classes: int = 80,
+    categories: list[str] = [],
 ) -> list[float]:
     """
     Extract per-class AP values from COCO evaluator results dict.
@@ -110,23 +110,8 @@ def extract_per_class_ap(
         List of float AP values, one per class (indices 0-79)
         Missing classes are filled with 0.0
     """
-    per_class_ap = []
-    for class_idx in range(n_classes):
-        # Try to find AP-{class_idx} key
-        key = f"AP-{class_idx}"
-        ap_val = results_dict.get(key, 0.0)
-        per_class_ap.append(float(ap_val))
-    
-    # If no AP-{class_idx} keys found, try AP-{class_name} keys
-    if all(ap == 0.0 for ap in per_class_ap):
-        # Build list from class names if available
-        logger.debug("No AP-{class_idx} keys found in results; trying AP-{class_name} keys")
-        from detectron2.data import MetadataCatalog
-        try:
-            # Try to get COCO class names
-            # This assumes the dataset is registered with Detectron2
-            # For COCO, class names are stored in MetadataCatalog
-            coco_classes = [
+    if not len(categories):
+        categories = [
                 "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
                 "fire hydrant", "stop sign", "parking meter", "bench", "cat", "dog", "horse", "sheep", "cow", "elephant",
                 "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis",
@@ -136,7 +121,23 @@ def extract_per_class_ap(
                 "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "microwave", "oven", "toaster", "sink",
                 "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush", "??", "??"
             ]
-            for class_idx, class_name in enumerate(coco_classes[:n_classes]):
+        
+    per_class_ap = []
+    for class_idx in range(len(categories)):
+        # Try to find AP-{class_idx} key
+        key = f"AP-{class_idx}"
+        ap_val = results_dict.get(key, 0.0)
+        per_class_ap.append(float(ap_val))
+    
+    # If no AP-{class_idx} keys found, try AP-{class_name} keys
+    if all(ap == 0.0 for ap in per_class_ap):
+        # Build list from class names if available
+        logger.debug("No AP-{class_idx} keys found in results; trying AP-{class_name} keys")
+        try:
+            # Try to get COCO class names
+            # This assumes the dataset is registered with Detectron2
+            # For COCO, class names are stored in MetadataCatalog
+            for class_idx, class_name in enumerate(categories):
                 key = f"AP-{class_name}"
                 ap_val = results_dict.get(key, 0.0)
                 per_class_ap[class_idx] = float(ap_val)
@@ -150,7 +151,7 @@ def quick_loss(
     model: torch.nn.Module,
     dataloader,
     device: torch.device,
-    max_samples: int = 1000,
+    max_samples: Optional[int] = 1000,
 ) -> float:
     """
     Mean total detection loss (loss_cls + loss_box_reg) on a data subset.

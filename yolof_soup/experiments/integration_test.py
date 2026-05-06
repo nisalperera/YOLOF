@@ -84,7 +84,7 @@ def run_phase_3() -> bool:
     print("=" * 80)
     
     try:
-        from yolof_soup.experiments.phase3_soup_construction import run_phase3
+        from yolof_soup.experiments.soup_construction import run_phase3
         
         print("\nRunning soup construction with 4 conditions...")
         results = run_phase3()
@@ -112,7 +112,7 @@ def run_phase_4() -> bool:
     print("=" * 80)
     
     try:
-        from yolof_soup.experiments.phase4_loss_landscape import run_phase4
+        from yolof_soup.experiments.loss_landscape import run_phase4
         
         print("\nRunning loss landscape analysis (LMC barriers, Hessian traces)...")
         results = run_phase4()
@@ -146,7 +146,7 @@ def run_phase_5() -> bool:
     print("=" * 80)
     
     try:
-        from yolof_soup.experiments.phase5_head_finetuning import run_phase5
+        from yolof_soup.experiments.head_finetuning import run_phase5
         
         print("\nRunning head fine-tuning for D1, D2, C3 variants...")
         results = run_phase5()
@@ -187,7 +187,7 @@ def run_rq3() -> bool:
     print("=" * 80)
     
     try:
-        from yolof_soup.experiments.rq3_coefficient_strategy_test import run_rq3
+        from yolof_soup.experiments.coefficient_strategy_test import run_rq3
         
         print("\nRunning coefficient strategy comparison and moderation analysis...")
         results = run_rq3()
@@ -215,7 +215,7 @@ def run_rq4() -> bool:
     print("=" * 80)
     
     try:
-        from yolof_soup.experiments.rq4_full_pipeline_test import run_rq4
+        from yolof_soup.experiments.full_pipeline_test import run_rq4
         
         print("\nRunning full pipeline evaluation and per-category analysis...")
         results = run_rq4()

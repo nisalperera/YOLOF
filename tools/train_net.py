@@ -235,16 +235,6 @@ class Trainer(DefaultTrainer):
             self.iter = checkpoints.get("iteration", 0)
             self.start_iter = self.iter + 1
 
-        # Re-init decoder AFTER checkpoint load on fresh runs only.
-        # This overwrites the decoder weights the checkpoint just restored,
-        # guaranteeing the decoder always starts from random init.
-        if not resume:
-            self.model.decoder._init_weight()
-            self.logger.info(
-                "[FreezeReinit] Decoder re-initialised after checkpoint load."
-            )
-
-
     @classmethod
     def _freeze_and_reinit_decoder(cls, model):
         """
@@ -265,10 +255,6 @@ class Trainer(DefaultTrainer):
         for p in model.encoder.parameters():
             if not p.requires_grad:
                 frozen_encoder += p.numel()
-
-        # 3. Re-initialise decoder from scratch
-        # _init_weight() is already defined on Decoder — it sets Conv2d weights to
-        # N(0, 0.01), BN/GN weights to 1/0, and cls_score.bias to prior_prob value.
 
         # Make absolutely sure decoder parameters are trainable
         frozen_decoder = 0

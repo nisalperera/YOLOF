@@ -26,6 +26,7 @@ Run: python -m yolof_soup.experiments.phase3_soup_construction
 
 from __future__ import annotations
 
+import os
 import json
 import logging
 from pathlib import Path
@@ -399,7 +400,7 @@ def _state_dict_size_mb(state_dict: Dict[str, torch.Tensor]) -> float:
 # Main entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_phase3(verbose: bool = True) -> Dict[str, Any]:
+def run(verbose: bool = True) -> Dict[str, Any]:
     """
     Main Phase 3 entry point.
     
@@ -424,10 +425,9 @@ def run_phase3(verbose: bool = True) -> Dict[str, Any]:
     
     # Load ingredient checkpoints
     logger.info("\n[1/6] Loading 6 ingredient checkpoints...")
-    ingredient_paths = [
-        Path(CHECKPOINT_DIR) / "phase2_decoder_sweep" / f"global_run{i:02d}.pth"
-        for i in range(6)
-    ]
+    ingredient_paths = []
+    for _run in os.listdir(CHECKPOINT_DIR):
+        ingredient_paths.append(Path(CHECKPOINT_DIR) / _run / "model_best.pth")
     
     # Check if paths exist
     missing = [p for p in ingredient_paths if not p.exists()]
@@ -539,4 +539,10 @@ def run_phase3(verbose: bool = True) -> Dict[str, Any]:
 
 
 if __name__ == "__main__":
-    run_phase3(verbose=True)
+    import argparse
+
+    args = argparse.ArgumentParser(description="Phase 3: Soup Construction & Evaluation")
+    args.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+    parsed_args = args.parse_args()
+
+    run(verbose=parsed_args.verbose)

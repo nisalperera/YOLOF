@@ -20,11 +20,11 @@ All shared paths, dataset names, checkpoints, and evaluation settings live in [c
 
 - [config/experiment_config.py](config/experiment_config.py): central paths, datasets, checkpoints, defaults, and Detectron2 config factories
 - [config/experiment_registry.py](config/experiment_registry.py): canonical run IDs and merge-condition metadata
-- [experiments/phase3_soup_construction.py](experiments/phase3_soup_construction.py): soup construction and M1-M4 evaluation
-- [experiments/phase4_loss_landscape.py](experiments/phase4_loss_landscape.py): LMC barriers, Hessian traces, and statistical tests
-- [experiments/phase5_head_finetuning.py](experiments/phase5_head_finetuning.py): head-only fine-tuning for D1, D2, C3 variants
-- [experiments/rq3_coefficient_strategy_test.py](experiments/rq3_coefficient_strategy_test.py): coefficient strategy comparison and moderation analysis
-- [experiments/rq4_full_pipeline_test.py](experiments/rq4_full_pipeline_test.py): full pipeline evaluation and per-category analysis
+- [experiments/soup_construction.py](experiments/soup_construction.py): soup construction and M1-M4 evaluation
+- [experiments/loss_landscape.py](experiments/loss_landscape.py): LMC barriers, Hessian traces, and statistical tests
+- [experiments/head_finetuning.py](experiments/head_finetuning.py): head-only fine-tuning for D1, D2, C3 variants
+- [experiments/coefficient_strategy_test.py](experiments/coefficient_strategy_test.py): coefficient strategy comparison and moderation analysis
+- [experiments/full_pipeline_test.py](experiments/full_pipeline_test.py): full pipeline evaluation and per-category analysis
 - [experiments/integration_test.py](experiments/integration_test.py): full pipeline integration test with validation
 - [utils/](utils/): checkpoint, key-partitioning, evaluation, and statistics helpers
 - [run_all_experiments.sh](run_all_experiments.sh): sequential runner for all phases
@@ -35,9 +35,9 @@ The legacy scripts under [../tools/](../tools/) were useful during development, 
 
 If you previously used the legacy scripts in [../tools/](../tools/), use this mapping:
 
-- `python tools/build_soup.py ...` -> `python -m yolof_soup.experiments.phase3_soup_construction`
-- `python tools/analyze_connectivity.py ...` -> `python -m yolof_soup.experiments.phase4_loss_landscape`
-- `python tools/analyze_loss_landscape.py ...` -> `python -m yolof_soup.experiments.phase4_loss_landscape` for barrier and sharpness analysis
+- `python tools/build_soup.py ...` -> `python -m yolof_soup.experiments.soup_construction`
+- `python tools/analyze_connectivity.py ...` -> `python -m yolof_soup.experiments.loss_landscape`
+- `python tools/analyze_loss_landscape.py ...` -> `python -m yolof_soup.experiments.loss_landscape` for barrier and sharpness analysis
 - `python tools/run_all_analysis.py ...` -> `bash yolof_soup/run_all_experiments.sh`
 
 Migration notes:
@@ -174,11 +174,11 @@ From the repository root:
 
 ```bash
 # Individual phases
-python -m yolof_soup.experiments.phase3_soup_construction
-python -m yolof_soup.experiments.phase4_loss_landscape
-python -m yolof_soup.experiments.phase5_head_finetuning
-python -m yolof_soup.experiments.rq3_coefficient_strategy_test
-python -m yolof_soup.experiments.rq4_full_pipeline_test
+python -m yolof_soup.experiments.soup_construction
+python -m yolof_soup.experiments.loss_landscape
+python -m yolof_soup.experiments.head_finetuning
+python -m yolof_soup.experiments.coefficient_strategy_test
+python -m yolof_soup.experiments.full_pipeline_test
 
 # Full integration test
 python -m yolof_soup.experiments.integration_test
@@ -196,12 +196,12 @@ Phase 1 and Phase 2 are not exposed as standalone modules in this repository. Th
 
 ## 8. What Each Phase Produces
 
-### Phase 3: `phase3_soup_construction`
+### Phase 3: `soup_construction`
 
 Primary outputs:
 
 - `results/experiment_run_manifest.json` - Registry of all ingredient runs
-- `results/phase3_soup_results.json` - Per-class AP for M1-M4 conditions
+- `results/soup_results.json` - Per-class AP for M1-M4 conditions
 - `checkpoints/m1_global_uniform_soup.pth` - Global uniform average
 - `checkpoints/m2_branch_uniform_soup.pth` - Branch-uniform averaging
 - `checkpoints/m3_dirichlet_soup.pth` - Coordinate-descent learned soup
@@ -209,43 +209,43 @@ Primary outputs:
 
 This phase builds 4 merging conditions (M1-M4) and evaluates on held-out split.
 
-### Phase 4: `phase4_loss_landscape`
+### Phase 4: `loss_landscape`
 
 Primary outputs:
 
-- `results/phase4_lmc_barriers.json` - LMC barrier heights for all ingredient pairs
-- `results/phase4_hessian_traces.json` - Hessian trace estimates (L2-norm proxy)
-- `results/phase4_statistical_tests.json` - RM-ANOVA statistical test results
+- `results/lmc_barriers.json` - LMC barrier heights for all ingredient pairs
+- `results/hessian_traces.json` - Hessian trace estimates (L2-norm proxy)
+- `results/statistical_tests.json` - RM-ANOVA statistical test results
 
 This phase measures loss landscape geometry (barriers, sharpness) and runs statistical tests on component-wise analysis.
 
-### Phase 5: `phase5_head_finetuning`
+### Phase 5: `head_finetuning`
 
 Primary outputs:
 
 - `checkpoints/d1_finetuned.pth` - Fine-tuned from M2 (global uniform)
 - `checkpoints/d2_finetuned.pth` - Fine-tuned from best learned soup
 - `checkpoints/c3_pipeline.pth` - Full pipeline variant
-- `results/phase5_finetuning_results.json` - Per-class AP and training metrics
+- `results/finetuning_results.json` - Per-class AP and training metrics
 
 This phase fine-tunes decoder heads on 3 variants and compares in-domain performance.
 
-### RQ3: `rq3_coefficient_strategy_test`
+### RQ3: `coefficient_strategy_test`
 
 Primary outputs:
 
-- `results/rq3_test_results.json` - Contains:
+- `results/test_results.json` - Contains:
   - Test 1: Paired t-test and Wilcoxon (M3 vs M4 strategy comparison)
   - Test 2: D1 vs D2 fine-tuning moderation with 95% CI
   - Test 3: Two-way RM-ANOVA framework (ready for learned coefficient data)
 
 Tests strategy selection (Dirichlet vs Fisher) and fine-tuning effects.
 
-### RQ4: `rq4_full_pipeline_test`
+### RQ4: `full_pipeline_test`
 
 Primary outputs:
 
-- `results/rq4_test_results.json` - Contains:
+- `results/test_results.json` - Contains:
   - Test 1: Bootstrap CI for full pipeline (C3)
   - Test 2: One-sample t-test vs 37.7 AP baseline
   - Test 3: Per-category analysis (rare, small, medium, large objects)
@@ -291,7 +291,7 @@ Run the focused tests from the repository root:
 python -m unittest tests.test_experiment_registry
 python -m unittest tests.test_model_soup_strategy_smoke
 python -m unittest tests.test_fisher_coefficients
-python -m unittest tests.test_phase4_result_schema
+python -m unittest tests.test_result_schema
 ```
 
 Notes:
@@ -349,7 +349,7 @@ python -m unittest tests.test_experiment_registry
 
 1. Validate environment variables and dataset paths.
 2. Confirm the Phase 1 and Phase 2 prerequisite checkpoints exist.
-3. Run Phase 3 and inspect `results/phase3_soup_results.json`.
+3. Run Phase 3 and inspect `results/soup_results.json`.
 4. Run Phase 4 for barriers, branch comparisons, and sharpness.
 5. Run Phase 5 for cross-domain transfer checks.
 6. Run the RQ1 and RQ3 scripts for compact hypothesis summaries.

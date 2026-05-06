@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -37,6 +38,7 @@ import torch
 
 from yolof_soup.config.experiment_config import (
     CHECKPOINT_DIR,
+    PHASE2_OUTPUT_DIR,
     DEVICE,
     EVAL_DATASET,
     RESULTS_DIR,
@@ -84,7 +86,7 @@ def compute_model_loss(
     model: torch.nn.Module,
     dataloader,
     device: torch.device,
-    max_samples: int = 500,
+    max_samples: Optional[int] = 500,
 ) -> float:
     """Compute mean loss on dataloader subset."""
     from yolof_soup.utils.eval_utils import quick_loss
@@ -138,7 +140,7 @@ def compute_lmc_barrier(
         model.eval()
         
         try:
-            loss_val = compute_model_loss(model, dataloader, DEVICE, max_samples=500)
+            loss_val = compute_model_loss(model, dataloader, DEVICE, max_samples=None)
             losses.append(loss_val)
             logger.debug("  [LMC] α=%.2f → loss=%.5f", alpha, loss_val)
         except Exception as e:
@@ -161,7 +163,7 @@ def compute_lmc_barrier(
 def compute_pairwise_lmc_barriers(
     ingredient_states: List[Dict[str, torch.Tensor]],
     cfg,
-    dataloader,
+    dataloader: torch.utils.data.DataLoader
 ) -> Dict[str, Dict[str, float]]:
     """
     Compute LMC barriers for all pairs of ingredients, split by component.
@@ -410,7 +412,7 @@ def run_statistical_tests(
 # Main entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_phase4(verbose: bool = True) -> Dict[str, Any]:
+def run(verbose: bool = True) -> Dict[str, Any]:
     """
     Main Phase 4 entry point.
     
@@ -430,13 +432,13 @@ def run_phase4(verbose: bool = True) -> Dict[str, Any]:
     # Setup directories
     results_dir = Path(RESULTS_DIR)
     results_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_dir = Path(CHECKPOINT_DIR)
+    ingredients_dir = Path(PHASE2_OUTPUT_DIR)
     
     # Load ingredient checkpoints
     logger.info("\n[1/4] Loading 6 ingredient checkpoints...")
     ingredient_paths = [
-        checkpoint_dir / "phase2_decoder_sweep" / f"global_run{i:02d}.pth"
-        for i in range(6)
+        ingredients_dir / ingredient / "model_best.pth"
+        for ingredient in os.listdir(ingredients_dir)
     ]
     
     missing = [p for p in ingredient_paths if not p.exists()]
@@ -454,16 +456,16 @@ def run_phase4(verbose: bool = True) -> Dict[str, Any]:
     
     # Build evaluation dataloader
     logger.info("\n[3/4] Building evaluation dataloader...")
-    eval_dataloader = build_eval_dataloader(cfg, EVAL_DATASET)
+    dataloader = build_eval_dataloader(cfg, EVAL_DATASET)
     logger.info("  ✓ Dataloader ready")
     
     # Compute pairwise LMC barriers
     logger.info("\n[4/4a] Computing pairwise LMC barriers (15 pairs)...")
-    lmc_barriers = compute_pairwise_lmc_barriers(ingredient_states, cfg, eval_dataloader)
+    lmc_barriers = compute_pairwise_lmc_barriers(ingredient_states, cfg, dataloader)
     
     # Compute Hessian traces
     logger.info("\n[4/4b] Computing Hessian traces for 6 ingredients...")
-    hessian_traces = compute_hessian_traces(ingredient_states, cfg, eval_dataloader)
+    hessian_traces = compute_hessian_traces(ingredient_states, cfg, dataloader)
     
     # Run statistical tests
     logger.info("\n[4/4c] Running statistical tests...")
@@ -504,4 +506,4 @@ def run_phase4(verbose: bool = True) -> Dict[str, Any]:
 
 
 if __name__ == "__main__":
-    run_phase4(verbose=True)
+    run(verbose=True)

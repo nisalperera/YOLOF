@@ -214,7 +214,7 @@ def evaluate_loss_on_dataset(
             if max_samples is not None and num_samples >= max_samples:
                 break
 
-            if (batch_idx + 1) % 20 == 0:
+            if (batch_idx + 1) % 1000 == 0 or batch_idx + 1 == len(dataloader):
                 logger.info("Processed %d batches...", batch_idx + 1)
 
     avg_loss_cls = total_loss_cls / max(1, num_samples)
