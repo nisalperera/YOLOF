@@ -142,8 +142,15 @@ datasets/coco_oi/
 datasets/damage_annotations_march25/
 datasets/pascal-voc/2007/
 datasets/pascal-voc/2012/
+datasets/pascal-voc/train_2007+2012.json
+datasets/pascal-voc/val_2007+2012.json
 datasets/merged_cocoplus_dataset_1_140.json
 datasets/filter_classes.ipynb
 datasets/split_dataset.ipynb
 models/
 results/
+
+**/*.md
+!**/**/README.md
+
+*.txt
