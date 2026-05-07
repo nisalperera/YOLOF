@@ -49,8 +49,7 @@ import numpy as np
 from scipy import stats
 
 from yolof_soup.config.experiment_config import RESULTS_DIR
-
-logger = logging.getLogger(__name__)
+from yolof_soup.utils.logging_utils import setup_logging
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -71,7 +70,7 @@ def test_strategy_comparison(
     Returns:
         Dict with t-test, Wilcoxon, and effect size results
     """
-    logger.info("Test 1: Strategy Comparison (Condition 3 vs 4)...")
+    logging.info("Test 1: Strategy Comparison (Condition 3 vs 4)...")
     
     # Convert to numpy arrays
     ap3 = np.array(per_class_ap_cond3, dtype=float)
@@ -83,7 +82,7 @@ def test_strategy_comparison(
     ap4_valid = ap4[valid_mask]
     
     if len(ap3_valid) < 3:
-        logger.warning("  ✗ Not enough valid class data for comparison")
+        logging.warning("  ✗ Not enough valid class data for comparison")
         return {"error": "Insufficient data", "n_valid_classes": len(ap3_valid)}
     
     # Paired t-test
@@ -119,7 +118,7 @@ def test_strategy_comparison(
                          else "No significant difference"
     }
     
-    logger.info("  → t=%.3f, p=%.4f (Wilcoxon p=%.4f), Cohen's d=%.3f",
+    logging.info("  → t=%.3f, p=%.4f (Wilcoxon p=%.4f), Cohen's d=%.3f",
                 t_stat, p_t, p_w, cohens_d)
     return results
 
@@ -148,7 +147,7 @@ def test_finetuning_moderation(
     Returns:
         Dict with paired t-test on gains and 95% CI on difference
     """
-    logger.info("Test 2: Fine-Tuning Moderation (D1 gains vs D2 gains)...")
+    logging.info("Test 2: Fine-Tuning Moderation (D1 gains vs D2 gains)...")
     
     # Convert to numpy arrays
     c2 = np.array(per_class_ap_cond2, dtype=float)
@@ -166,7 +165,7 @@ def test_finetuning_moderation(
     gain_d2_valid = gain_d2[valid_mask]
     
     if len(gain_d1_valid) < 3:
-        logger.warning("  ✗ Not enough valid class data for moderation test")
+        logging.warning("  ✗ Not enough valid class data for moderation test")
         return {"error": "Insufficient data", "n_valid_classes": len(gain_d1_valid)}
     
     # Independent-samples t-test
@@ -197,9 +196,9 @@ def test_finetuning_moderation(
                          else "No significant difference in gains"
     }
     
-    logger.info("  → D1 gain=%.4f, D2 gain=%.4f, diff=%.4f, t=%.3f, p=%.4f",
+    logging.info("  → D1 gain=%.4f, D2 gain=%.4f, diff=%.4f, t=%.3f, p=%.4f",
                 mean_gain_d1, mean_gain_d2, diff_gains, t_stat, p_t)
-    logger.info("  → 95%% CI on difference: [%.4f, %.4f]", ci_lower, ci_upper)
+    logging.info("  → 95%% CI on difference: [%.4f, %.4f]", ci_lower, ci_upper)
     return results
 
 
@@ -216,13 +215,13 @@ def test_strategy_branch_interaction() -> Dict[str, Any]:
     Note: This requires learned coefficient extraction from Phase 3.
     For now, returns a framework that can be populated with actual data.
     """
-    logger.info("Test 3: Strategy-by-Branch Interaction (Two-Way ANOVA)...")
+    logging.info("Test 3: Strategy-by-Branch Interaction (Two-Way ANOVA)...")
     
     try:
         import pandas as pd
         from statsmodels.stats.anova import AnovaRM
     except ImportError:
-        logger.warning("  statsmodels not installed; returning framework")
+        logging.warning("  statsmodels not installed; returning framework")
         return {
             "test_name": "Two-way RM-ANOVA: strategy × branch",
             "status": "skipped",
@@ -245,7 +244,7 @@ def test_strategy_branch_interaction() -> Dict[str, Any]:
         "interpretation": "Post-hoc contrasts would compare main effects of branch and strategy × branch interaction"
     }
     
-    logger.info("  ✓ Framework ready (awaiting learned coefficient data from Phase 3)")
+    logging.info("  ✓ Framework ready (awaiting learned coefficient data from Phase 3)")
     return results
 
 
@@ -253,7 +252,7 @@ def test_strategy_branch_interaction() -> Dict[str, Any]:
 # Main entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_rq3(verbose: bool = True) -> Dict[str, Any]:
+def run(verbose: bool = True) -> Dict[str, Any]:
     """
     Main RQ3 entry point.
     
@@ -265,41 +264,41 @@ def run_rq3(verbose: bool = True) -> Dict[str, Any]:
     Returns:
         Dict with results for all three tests
     """
-    if verbose:
-        logging.basicConfig(level=logging.INFO, format="%(levelname)-8s | %(name)s | %(message)s")
     
-    logger.info("=" * 90)
-    logger.info("RQ3: COEFFICIENT STRATEGY TESTS")
-    logger.info("=" * 90)
+    setup_logging(level=logging.DEBUG if verbose else logging.INFO, filename="rq3_test.log", use_stdout=True)
+    
+    logging.info("=" * 90)
+    logging.info("RQ3: COEFFICIENT STRATEGY TESTS")
+    logging.info("=" * 90)
     
     # Setup directories
     results_dir = Path(RESULTS_DIR)
     results_dir.mkdir(parents=True, exist_ok=True)
     
     # Load Phase 3 results
-    logger.info("\n[1/4] Loading Phase 3 results...")
+    logging.info("\n[1/4] Loading Phase 3 results...")
     phase3_json = results_dir / "phase3_soup_results.json"
     if not phase3_json.exists():
-        logger.error("  ✗ Phase 3 results not found: %s", phase3_json)
+        logging.error("  ✗ Phase 3 results not found: %s", phase3_json)
         return {"error": "Phase 3 results not found"}
     
     with open(phase3_json, "r") as f:
         phase3_results = json.load(f)
-    logger.info("  ✓ Loaded Phase 3 results")
+    logging.info("  ✓ Loaded Phase 3 results")
     
     # Load Phase 5 results
-    logger.info("\n[2/4] Loading Phase 5 results...")
+    logging.info("\n[2/4] Loading Phase 5 results...")
     phase5_json = results_dir / "phase5_finetuning_results.json"
     if not phase5_json.exists():
-        logger.error("  ✗ Phase 5 results not found: %s", phase5_json)
+        logging.error("  ✗ Phase 5 results not found: %s", phase5_json)
         return {"error": "Phase 5 results not found"}
     
     with open(phase5_json, "r") as f:
         phase5_results = json.load(f)
-    logger.info("  ✓ Loaded Phase 5 results")
+    logging.info("  ✓ Loaded Phase 5 results")
     
     # Extract per-class AP arrays
-    logger.info("\n[3/4] Extracting per-class AP arrays...")
+    logging.info("\n[3/4] Extracting per-class AP arrays...")
     cond1_ap = phase3_results.get("condition_1", {}).get("per_class_ap", [0.0] * 80)
     cond2_ap = phase3_results.get("condition_2", {}).get("per_class_ap", [0.0] * 80)
     cond3_ap = phase3_results.get("condition_3", {}).get("per_class_ap", [0.0] * 80)
@@ -308,10 +307,10 @@ def run_rq3(verbose: bool = True) -> Dict[str, Any]:
     
     d1_ap = phase5_results.get("d1", {}).get("per_class_ap", [0.0] * 80)
     d2_ap = phase5_results.get("d2", {}).get("per_class_ap", [0.0] * 80)
-    logger.info("  ✓ Extracted per-class AP for all conditions")
+    logging.info("  ✓ Extracted per-class AP for all conditions")
     
     # Run tests
-    logger.info("\n[4/4] Running statistical tests...")
+    logging.info("\n[4/4] Running statistical tests...")
     
     test1_result = test_strategy_comparison(cond3_ap, cond4_ap)
     test2_result = test_finetuning_moderation(cond2_ap, best_learned_ap, d1_ap, d2_ap)
@@ -334,23 +333,23 @@ def run_rq3(verbose: bool = True) -> Dict[str, Any]:
     }
     
     # Save results
-    logger.info("\nSaving results...")
+    logging.info("\nSaving results...")
     results_json = results_dir / "rq3_test_results.json"
     with open(results_json, "w") as f:
         json.dump(all_results, f, indent=2, default=str)
-    logger.info("  → Results: %s", results_json)
+    logging.info("  → Results: %s", results_json)
     
-    logger.info("\n" + "=" * 90)
-    logger.info("RQ3 ANALYSIS COMPLETE")
-    logger.info("=" * 90)
-    logger.info("Summary:")
-    logger.info("  Test 1 (Strategy): %s", test1_result.get("interpretation", "unknown"))
-    logger.info("  Test 2 (Moderation): %s", test2_result.get("interpretation", "unknown"))
-    logger.info("  Test 3 (Interaction): %s", test3_result.get("status", "unknown"))
-    logger.info("=" * 90)
+    logging.info("\n" + "=" * 90)
+    logging.info("RQ3 ANALYSIS COMPLETE")
+    logging.info("=" * 90)
+    logging.info("Summary:")
+    logging.info("  Test 1 (Strategy): %s", test1_result.get("interpretation", "unknown"))
+    logging.info("  Test 2 (Moderation): %s", test2_result.get("interpretation", "unknown"))
+    logging.info("  Test 3 (Interaction): %s", test3_result.get("status", "unknown"))
+    logging.info("=" * 90)
     
     return all_results
 
 
 if __name__ == "__main__":
-    run_rq3(verbose=True)
+    run(verbose=True)

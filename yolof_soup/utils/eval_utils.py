@@ -30,8 +30,9 @@ from yolof.analysis.mode_connectivity import evaluate_loss_on_dataset
 from yolof.data import YOLOFDatasetMapper
 from yolof.data.samplers import EvenlyDistributedInferenceSampler
 from yolof.evaluation.coco_ar_ap import COCOEvaluatorWithAPandAR
+from yolof_soup.utils.logging_utils import setup_logging
 
-logger = logging.getLogger(__name__)
+logger = setup_logging(level=logging.INFO, filename="eval_utils.log", use_stdout=True)
 
 
 def build_eval_dataloader(cfg, dataset_name: Optional[str] = None):

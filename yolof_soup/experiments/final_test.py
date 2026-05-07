@@ -13,14 +13,16 @@ import logging
 
 from yolof_soup.config.experiment_config import RESULTS_DIR
 from yolof_soup.utils import wilcoxon_one_tailed, cohens_d
-
-logger = logging.getLogger(__name__)
+from yolof_soup.utils.logging_utils import setup_logging
 
 
 def main():
-    logger.info("=" * 60)
-    logger.info("RQ1 / H1: Statistical Test")
-    logger.info("=" * 60)
+
+    setup_logging(level=logging.INFO, filename="rq1_final_test.log", use_stdout=True)
+
+    logging.info("=" * 60)
+    logging.info("RQ1 / H1: Statistical Test")
+    logging.info("=" * 60)
 
     with open(f"{RESULTS_DIR}/phase3_soup_results.json") as f:
         p3 = json.load(f)
@@ -37,28 +39,27 @@ def main():
     ]
     baseline = p3["baseline"]["AP"]
 
-    logger.info("Head-specific mAP : %s", head_maps)
-    logger.info("Global mAP        : %s", global_maps)
-    logger.info("Baseline mAP      : %.4f", baseline)
+    logging.info("Head-specific mAP : %s", head_maps)
+    logging.info("Global mAP        : %s", global_maps)
+    logging.info("Baseline mAP      : %.4f", baseline)
 
     wsr = wilcoxon_one_tailed(head_maps, global_maps)
-    logger.info("\n--- Wilcoxon Signed-Rank (H1) ---")
-    logger.info(json.dumps(wsr, indent=2))
-    logger.info("H1 supported: %s", wsr["h1_supported"])
+    logging.info("\n--- Wilcoxon Signed-Rank (H1) ---")
+    logging.info(json.dumps(wsr, indent=2))
+    logging.info("H1 supported: %s", wsr["h1_supported"])
 
     best_head = max(head_maps)
     d         = cohens_d([best_head], [baseline])
-    logger.info("\n--- Cohen's d (best head soup vs. baseline) ---")
-    logger.info("d = %.4f", d)
+    logging.info("\n--- Cohen's d (best head soup vs. baseline) ---")
+    logging.info("d = %.4f", d)
 
     results = dict(head_maps=head_maps, global_maps=global_maps,
                    baseline=baseline, wilcoxon=wsr, cohens_d=d)
     out = f"{RESULTS_DIR}/rq1_test_results.json"
     with open(out, "w") as f:
         json.dump(results, f, indent=2)
-    logger.info("RQ1 results saved → %s", out)
+    logging.info("RQ1 results saved → %s", out)
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
     main()

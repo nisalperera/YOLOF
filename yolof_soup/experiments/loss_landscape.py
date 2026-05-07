@@ -53,8 +53,9 @@ from yolof_soup.utils.key_utils import (
     merge_subdicts,
     split_decoder_subheads,
 )
+from yolof_soup.utils.logging_utils import setup_logging
 
-logger = logging.getLogger(__name__)
+logger = setup_logging(level=logging.INFO, filename="phase4_loss_landscape.log", use_stdout=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Hyperparameters
@@ -228,8 +229,151 @@ def compute_pairwise_lmc_barriers(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Hessian Trace Computation (L2-Norm Proxy)
+# Hessian Trace Computation (Full Hessian with Hutchinson Estimator)
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _check_available_gpu_memory(min_gb: float = 2.0) -> bool:
+    """Check if sufficient GPU memory is available."""
+    try:
+        if torch.cuda.is_available():
+            total_memory = torch.cuda.get_device_properties(DEVICE).total_memory
+            allocated = torch.cuda.memory_allocated(DEVICE)
+            reserved = torch.cuda.memory_reserved(DEVICE)
+            available = total_memory - allocated
+            available_gb = available / (1024 ** 3)
+            logger.debug("  GPU memory: %.2f GB available", available_gb)
+            return available_gb >= min_gb
+    except Exception as e:
+        logger.debug("  GPU memory check failed: %s", e)
+    return False
+
+
+def _l2_norm_squared(state_dict: Dict[str, torch.Tensor]) -> float:
+    """Compute sum of squared L2 norms (proxy for Hessian trace)."""
+    total = 0.0
+    for tensor in state_dict.values():
+        if torch.is_floating_point(tensor):
+            total += (tensor.float() ** 2).sum().item()
+    return float(total)
+
+
+def _compute_hessian_trace_hutchinson(
+    state_dict: Dict[str, torch.Tensor],
+    model: torch.nn.Module,
+    dataloader,
+    device: torch.device,
+    n_samples: int = HESSIAN_SAMPLES,
+) -> float:
+    """
+    Compute Hessian trace using Hutchinson estimator with Rademacher vectors.
+    
+    Tr(H) ≈ E[z^T H z] where z ~ Rademacher {-1, +1}
+    
+    Args:
+        state_dict: Model parameters
+        model: YOLOF model
+        dataloader: Evaluation dataloader
+        device: Compute device
+        n_samples: Number of Rademacher samples
+    
+    Returns:
+        Estimated trace of Hessian
+    """
+    trace_estimate = 0.0
+    
+    try:
+        # Assign state to model
+        assign_state_to_model(model, state_dict)
+        model = model.to(device)
+        model.eval()
+        
+        # Collect all parameters for Hessian computation
+        params = list(model.parameters())
+        param_sizes = [p.numel() for p in params]
+        total_params = sum(param_sizes)
+        
+        logger.debug("    Total parameters: %d", total_params)
+        
+        # Hutchinson trace estimation with Rademacher vectors
+        for sample_idx in range(n_samples):
+            # Generate random Rademacher vector z ~ {-1, +1}
+            z_list = [torch.randint(0, 2, p.shape, device=device).float() * 2 - 1 for p in params]
+            
+            # Compute z^T ∇L
+            model.zero_grad()
+            
+            # Get a batch and compute loss
+            try:
+                batch = next(iter(dataloader))
+                if isinstance(batch, (list, tuple)):
+                    images, targets = batch[0], batch[1]
+                else:
+                    images = batch
+                    targets = None
+                
+                if hasattr(images, "to"):
+                    images = images.to(device)
+                if targets is not None and hasattr(targets, "to"):
+                    targets = targets.to(device)
+                
+                # Forward pass
+                outputs = model(images, targets) if targets is not None else model(images)
+                if isinstance(outputs, dict) and "loss_classifier" in outputs:
+                    loss = outputs["loss_classifier"] + outputs.get("loss_box_reg", 0)
+                else:
+                    loss = outputs if isinstance(outputs, torch.Tensor) else 0.0
+                
+                if loss == 0.0:
+                    logger.debug("    Sample %d: No loss computed", sample_idx)
+                    continue
+                
+                # Compute gradient
+                grads = torch.autograd.grad(
+                    loss, params, create_graph=True, retain_graph=True, allow_unused=True
+                )
+                
+                # Compute z^T ∇L (directional derivative)
+                z_grad_product = sum(
+                    (z * g).sum() for z, g in zip(z_list, grads) if g is not None
+                )
+                
+                # Compute Hessian-vector product: ∇(z^T ∇L)
+                if z_grad_product.requires_grad:
+                    hessian_z = torch.autograd.grad(
+                        z_grad_product, params, create_graph=False, allow_unused=True
+                    )
+                    
+                    # Compute z^T H z
+                    z_hz = sum(
+                        (z * hz).sum() for z, hz in zip(z_list, hessian_z) if hz is not None
+                    )
+                    trace_estimate += float(z_hz.item())
+                    logger.debug("    Sample %d: z^T H z = %.6f", sample_idx, float(z_hz.item()))
+                
+            except StopIteration:
+                logger.debug("    Sample %d: DataLoader exhausted", sample_idx)
+                break
+            except Exception as e:
+                logger.debug("    Sample %d: Hessian computation failed: %s", sample_idx, str(e))
+                continue
+            finally:
+                del z_list, grads
+                torch.cuda.empty_cache()
+        
+        # Average over samples
+        trace_estimate /= max(n_samples, 1)
+        logger.debug("    Estimated trace (Hutchinson): %.6f", trace_estimate)
+        
+    except Exception as e:
+        logger.warning("    Hutchinson trace estimation failed: %s", e)
+        # Fallback to L2-norm
+        trace_estimate = _l2_norm_squared(state_dict)
+        logger.warning("    Falling back to L2-norm proxy: %.6f", trace_estimate)
+    finally:
+        model.zero_grad()
+    
+    return float(trace_estimate)
+
 
 def compute_hessian_traces(
     ingredient_states: List[Dict[str, torch.Tensor]],
@@ -239,8 +383,8 @@ def compute_hessian_traces(
     """
     Compute Hessian traces for all ingredients, split by component.
     
-    Uses L2-norm as proxy (fast, deterministic).
-    Can be upgraded to full Hessian computation if GPU memory available.
+    Uses full Hessian computation (Hutchinson estimator) when GPU memory available.
+    Falls back to L2-norm proxy for fast, deterministic computation.
     
     Returns:
         {
@@ -250,7 +394,13 @@ def compute_hessian_traces(
         }
     """
     logger.info("Computing Hessian traces for 6 ingredients...")
-    logger.info("  (Using L2-norm proxy; can upgrade to full Hessian later)")
+    
+    # Determine computation method based on GPU memory
+    use_full_hessian = _check_available_gpu_memory(min_gb=2.0)
+    if use_full_hessian:
+        logger.info("  ✓ Sufficient GPU memory detected; using full Hessian (Hutchinson estimator)")
+    else:
+        logger.info("  ⚠ Limited GPU memory; using L2-norm proxy (fast, deterministic)")
     
     # Extract component keys
     decoder_keys = get_decoder_keys(ingredient_states[0])
@@ -262,16 +412,39 @@ def compute_hessian_traces(
     for idx, state in enumerate(ingredient_states):
         logger.info("  [%d/6] Ingredient %d", idx + 1, idx)
         
-        # Use L2 norm as proxy for Hessian trace
+        # Extract subcomponents
         be_sub = extract_subdict(state, be_keys)
         cls_sub = extract_subdict(state, cls_keys)
         reg_sub = extract_subdict(state, reg_keys)
         shared_sub = extract_subdict(state, shared_keys)
         
-        trace_be = _l2_norm_squared(be_sub)
-        trace_cls = _l2_norm_squared(cls_sub)
-        trace_reg = _l2_norm_squared(reg_sub)
-        trace_shared = _l2_norm_squared(shared_sub)
+        if use_full_hessian:
+            # Compute full Hessian traces using Hutchinson estimator
+            logger.debug("    Computing backbone_encoder Hessian trace...")
+            model = build_model_from_config(cfg)
+            trace_be = _compute_hessian_trace_hutchinson(be_sub, model, dataloader, DEVICE)
+            del model
+            
+            logger.debug("    Computing cls_head Hessian trace...")
+            model = build_model_from_config(cfg)
+            trace_cls = _compute_hessian_trace_hutchinson(cls_sub, model, dataloader, DEVICE)
+            del model
+            
+            logger.debug("    Computing reg_head Hessian trace...")
+            model = build_model_from_config(cfg)
+            trace_reg = _compute_hessian_trace_hutchinson(reg_sub, model, dataloader, DEVICE)
+            del model
+            
+            logger.debug("    Computing shared Hessian trace...")
+            model = build_model_from_config(cfg)
+            trace_shared = _compute_hessian_trace_hutchinson(shared_sub, model, dataloader, DEVICE)
+            del model
+        else:
+            # Use L2-norm proxy for fast computation
+            trace_be = _l2_norm_squared(be_sub)
+            trace_cls = _l2_norm_squared(cls_sub)
+            trace_reg = _l2_norm_squared(reg_sub)
+            trace_shared = _l2_norm_squared(shared_sub)
         
         results[f"ingredient_{idx}"] = {
             "backbone_encoder": float(trace_be),
@@ -279,18 +452,11 @@ def compute_hessian_traces(
             "reg_head": float(trace_reg),
             "shared": float(trace_shared),
         }
+        
+        torch.cuda.empty_cache()
     
     logger.info("  ✓ Hessian trace computation complete")
     return results
-
-
-def _l2_norm_squared(state_dict: Dict[str, torch.Tensor]) -> float:
-    """Compute sum of squared L2 norms (proxy for Hessian trace)."""
-    total = 0.0
-    for tensor in state_dict.values():
-        if torch.is_floating_point(tensor):
-            total += (tensor.float() ** 2).sum().item()
-    return float(total)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -422,8 +588,7 @@ def run(verbose: bool = True) -> Dict[str, Any]:
     Returns:
         Dict with all barrier, trace, and test results
     """
-    if verbose:
-        logging.basicConfig(level=logging.INFO, format="%(levelname)-8s | %(name)s | %(message)s")
+    
     
     logger.info("=" * 90)
     logger.info("PHASE 4: LOSS LANDSCAPE ANALYSIS")

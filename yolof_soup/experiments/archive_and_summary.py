@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-logger = logging.getLogger(__name__)
+from yolof_soup.utils.logging_utils import setup_logging
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -49,7 +49,7 @@ def compute_file_hash(file_path: str | Path, algorithm: str = "sha256") -> str:
     """
     file_path = Path(file_path)
     if not file_path.exists():
-        logger.warning("File not found for hashing: %s", file_path)
+        logging.warning("File not found for hashing: %s", file_path)
         return ""
 
     hasher = hashlib.new(algorithm)
@@ -92,7 +92,7 @@ def build_experiment_summary(
         Dict with keys: timestamp, phases (dict of phase results), checkpoints (dict with hashes),
                         lineage, notes
     """
-    logger.info("Building experiment summary...")
+    logging.info("Building experiment summary...")
 
     timestamp = datetime.now().isoformat()
 
@@ -124,7 +124,7 @@ def build_experiment_summary(
                 "conditions_evaluated": list(soup_results.get("conditions", {}).keys()),
             }
         except Exception as e:
-            logger.warning("Could not read soup results: %s", e)
+            logging.warning("Could not read soup results: %s", e)
             phases["4_soup_merging"] = {"status": "completed", "error": str(e)}
 
     if phase4b_preregistration_json:
@@ -138,7 +138,7 @@ def build_experiment_summary(
                 "timestamp": preregistration.get("timestamp"),
             }
         except Exception as e:
-            logger.warning("Could not read preregistration: %s", e)
+            logging.warning("Could not read preregistration: %s", e)
             phases["4b_preregistration"] = {"status": "completed", "error": str(e)}
 
     # Collect head fine-tuning results
@@ -165,7 +165,7 @@ def build_experiment_summary(
                     "size_mb": ckpt_path.stat().st_size / (1024 ** 2),
                 }
             else:
-                logger.warning("Ingredient checkpoint not found: %s", ckpt_path)
+                logging.warning("Ingredient checkpoint not found: %s", ckpt_path)
 
     if m2_checkpoint_path and Path(m2_checkpoint_path).exists():
         checkpoints["m2_branch_uniform"] = {
@@ -225,7 +225,7 @@ def build_experiment_summary(
         ),
     }
 
-    logger.info("Experiment summary built with %d checkpoints archived", lineage["total_checkpoints"])
+    logging.info("Experiment summary built with %d checkpoints archived", lineage["total_checkpoints"])
     return summary
 
 
@@ -246,7 +246,7 @@ def save_experiment_summary(
     json_path = output_dir / "experiment_summary.json"
     with open(json_path, "w") as f:
         json.dump(summary, f, indent=2, default=str)
-    logger.info("Experiment summary JSON saved → %s", json_path)
+    logging.info("Experiment summary JSON saved → %s", json_path)
 
     # TXT (human-readable lineage)
     txt_path = output_dir / "experiment_lineage.txt"
@@ -269,7 +269,7 @@ def save_experiment_summary(
                     if isinstance(item_data, dict) and "hash_sha256" in item_data:
                         f.write(f"    {item_name:36s}: {item_data['hash_sha256']}\n")
         f.write(f"\nNOTES:\n{summary.get('notes', 'N/A')}\n")
-    logger.info("Experiment lineage TXT saved → %s", txt_path)
+    logging.info("Experiment lineage TXT saved → %s", txt_path)
 
     return json_path, txt_path
 
@@ -319,7 +319,15 @@ def main():
         "--c3-results-json",
         help="Path to phase5_c3_results.json",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging for debugging",
+    )
     args = parser.parse_args()
+
+
+    setup_logging(level=logging.DEBUG if args.verbose else logging.INFO, filename="archive_and_summary.log", use_stdout=True)
 
     # Load audit report if provided
     audit_report = None
@@ -328,7 +336,7 @@ def main():
             with open(args.audit_report) as f:
                 audit_report = json.load(f)
         except Exception as e:
-            logger.warning("Could not load audit report: %s", e)
+            logging.warning("Could not load audit report: %s", e)
 
     # Build summary
     summary = build_experiment_summary(
@@ -345,19 +353,15 @@ def main():
     # Save
     json_path, txt_path = save_experiment_summary(summary, args.output_dir)
 
-    logger.info("="*80)
-    logger.info("ARCHIVE & SUMMARY COMPLETE")
-    logger.info("="*80)
-    logger.info("Files saved:")
-    logger.info("  JSON: %s", json_path)
-    logger.info("  TXT:  %s", txt_path)
+    logging.info("="*80)
+    logging.info("ARCHIVE & SUMMARY COMPLETE")
+    logging.info("="*80)
+    logging.info("Files saved:")
+    logging.info("  JSON: %s", json_path)
+    logging.info("  TXT:  %s", txt_path)
 
     return summary
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[%(asctime)s] [%(name)s] %(levelname)s: %(message)s",
-    )
     main()

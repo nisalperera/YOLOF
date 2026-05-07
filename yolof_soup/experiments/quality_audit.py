@@ -34,9 +34,9 @@ from yolof_soup.config.experiment_registry import get_run_specs
 from yolof_soup.utils.checkpoint_utils import load_state
 from yolof_soup.utils.eval_utils import compute_coco_map, extract_per_class_ap
 from yolof_soup.utils.inference import InferenceWrapper
+from yolof_soup.utils.logging_utils import setup_logging
 
-logger = logging.getLogger(__name__)
-
+logger = setup_logging(level=logging.INFO, filename="phase2b_quality_audit.log", use_stdout=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Ingredient Audit: Load, Evaluate, Report
@@ -243,7 +243,16 @@ def main():
         default=3.0,
         help="mAP threshold (pp) below pool max for flagging outliers",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging for debugging",
+    )
     args = parser.parse_args()
+
+    if args.verbose:
+        logger.setLevel(logging.DEBUG)
+        logger.debug("Verbose logging enabled")
 
     # Build config
     # cfg = build_eval_cfg(EVAL_DATASET)
@@ -305,8 +314,4 @@ def main():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[%(asctime)s] [%(name)s] %(levelname)s: %(message)s",
-    )
     main()

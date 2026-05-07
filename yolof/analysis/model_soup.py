@@ -37,8 +37,9 @@ from typing import Dict, List, Literal, Optional
 import torch
 
 from yolof.analysis.mode_connectivity import load_checkpoint_state_dict
+from yolof_soup.utils.logging_utils import setup_logging
 
-logger = logging.getLogger(__name__)
+logger = setup_logging(logging.INFO, filename="analysis/model_soup.log", use_stdout=True)
 
 # Parameter-name prefixes that belong to the backbone and encoder.
 # Adjust if your model's attribute names differ.

@@ -24,12 +24,9 @@ from yolof.analysis import (
     interpolate_models,
     compute_connectivity_metrics,
 )
+from yolof_utils.logging_utils import setup_logging
 
-logging.basicConfig(
-    format="%(asctime)s %(name)s %(levelname)s: %(message)s",
-    level=logging.INFO,
-)
-logger = logging.getLogger(__name__)
+logger = setup_logging(level=logging.INFO, filename="test_lmc.log", use_stdout=True)
 
 
 def test_checkpoint_loading():

@@ -34,8 +34,7 @@ from yolof_soup.utils import (
     get_map,
     compare_diversity_gain,
 )
-
-logger = logging.getLogger(__name__)
+from yolof_soup.utils.logging_utils import setup_logging
 
 
 def build_model_with_state(full_state: dict, device):
@@ -80,9 +79,12 @@ def global_uniform_soup_map(states: list, device) -> float:
 
 
 def main():
-    logger.info("=" * 60)
-    logger.info("RQ3: Diversity vs. Soup Performance")
-    logger.info("=" * 60)
+
+    setup_logging(level=logging.INFO, filename="rq3_diversity_analysis.log", use_stdout=True)
+
+    logging.info("=" * 60)
+    logging.info("RQ3: Diversity vs. Soup Performance")
+    logging.info("=" * 60)
 
     backbone_enc_state = load_state(BACKBONE_ENC_CKPT)
     decoder_states     = load_states(DECODER_CKPT_PATHS)
@@ -103,7 +105,7 @@ def main():
         mAP = uniform_soup_map(sub_states, decoder_keys,
                                 backbone_enc_state, DEVICE)
         results[f"head_N{N}"] = dict(N=N, diversity=D, mAP=mAP)
-        logger.info("Head-specific N=%d  D=%.4f  mAP=%.4f", N, D, mAP)
+        logging.info("Head-specific N=%d  D=%.4f  mAP=%.4f", N, D, mAP)
 
     # ── Global: N=3 and N=6 ───────────────────────────────
     for N in [3, 6]:
@@ -113,7 +115,7 @@ def main():
         D_g     = pairwise_diversity(tau_g)
         mAP_g   = global_uniform_soup_map(sub_g, DEVICE)
         results[f"global_N{N}"] = dict(N=N, diversity=D_g, mAP=mAP_g)
-        logger.info("Global N=%d  D=%.4f  mAP=%.4f", N, D_g, mAP_g)
+        logging.info("Global N=%d  D=%.4f  mAP=%.4f", N, D_g, mAP_g)
 
     # ── H3 directional comparison ─────────────────────────
     delta_head   = results["head_N6"]["mAP"] - results["head_N3"]["mAP"]
@@ -121,13 +123,13 @@ def main():
 
     h3 = compare_diversity_gain(delta_head, delta_global)
     results["h3_result"] = h3
-    logger.info("\n=== RQ3/H3 ===")
-    logger.info(json.dumps(h3, indent=2))
+    logging.info("\n=== RQ3/H3 ===")
+    logging.info(json.dumps(h3, indent=2))
 
     out = f"{RESULTS_DIR}/rq3_diversity_results.json"
     with open(out, "w") as f:
         json.dump(results, f, indent=2)
-    logger.info("RQ3 complete → %s", out)
+    logging.info("RQ3 complete → %s", out)
 
 
 if __name__ == "__main__":

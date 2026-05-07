@@ -13,7 +13,9 @@ import numpy as np
 import torch
 from torch import nn
 
-logger = logging.getLogger(__name__)
+from yolof_soup.utils.logging_utils import setup_logging
+
+logger = setup_logging(level=logging.INFO, filename="mode_connectivity.log", use_stdout=True)
 
 
 def _move_to_device(value, device: torch.device):

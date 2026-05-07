@@ -18,8 +18,9 @@ from typing import Dict, List, Tuple
 import torch
 
 from yolof.analysis.model_soup import _is_backbone_encoder
+from yolof_soup.utils.logging_utils import setup_logging
 
-logger = logging.getLogger(__name__)
+logger = setup_logging(logging.INFO, filename="utils/key_utils.log", use_stdout=True)
 
 _CLS_PATTERNS: Tuple[str, ...] = (
     "cls_subnet", "cls_score", "cls_pred", "classification",

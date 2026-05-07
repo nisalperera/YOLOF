@@ -35,8 +35,9 @@ from yolof.analysis import (
     compute_connectivity_metrics,
 )
 from yolof.data import YOLOFDatasetMapper
+from yolof_soup.utils.logging_utils import setup_logging
 
-logger = logging.getLogger(__name__)
+logger = setup_logging(logging.INFO, filename="tools/analyze_connectivity.log", use_stdout=True)
 
 
 def _trivial_batch_collator(batch):

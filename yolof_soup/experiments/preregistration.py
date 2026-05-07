@@ -28,8 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger(__name__)
-
+from yolof_soup.utils.logging_utils import setup_logging
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pre-registration: Lock Best Learned Soup Before Phase 5
@@ -56,7 +55,7 @@ def preregister_best_learned_soup(
         raise FileNotFoundError(f"Soup results JSON not found: {soup_results_json}")
 
     # Load Phase 4 soup results
-    logger.info("Loading Phase 4 soup results: %s", soup_results_json)
+    logging.info("Loading Phase 4 soup results: %s", soup_results_json)
     with open(soup_results_json) as f:
         soup_results = json.load(f)
 
@@ -90,16 +89,16 @@ def preregister_best_learned_soup(
         learned_maps["m4"] = m4_map
 
     if not learned_maps:
-        logger.error("No valid learned soup results found in %s", soup_results_json)
+        logging.error("No valid learned soup results found in %s", soup_results_json)
         raise ValueError("Cannot identify best learned soup from results")
 
     best_condition = max(learned_maps, key=learned_maps.get)
     best_map = learned_maps[best_condition]
     best_ckpt = m3_ckpt if best_condition == "m3" else m4_ckpt
 
-    logger.info("Best learned soup identified: %s with mAP50:95=%.4f", best_condition, best_map)
-    logger.info("  M3 mAP: %.4f", m3_map or 0.0)
-    logger.info("  M4 mAP: %.4f", m4_map or 0.0)
+    logging.info("Best learned soup identified: %s with mAP50:95=%.4f", best_condition, best_map)
+    logging.info("  M3 mAP: %.4f", m3_map or 0.0)
+    logging.info("  M4 mAP: %.4f", m4_map or 0.0)
 
     # Create pre-registration record
     preregistration = {
@@ -124,10 +123,10 @@ def preregister_best_learned_soup(
         "soup_results_source": str(soup_results_json),
     }
 
-    logger.info("Pre-registration created:")
-    logger.info("  Chosen:  %s", preregistration["chosen_condition"])
-    logger.info("  Map:     %.4f", preregistration["chosen_map50_95"])
-    logger.info("  Ckpt:    %s", preregistration["chosen_checkpoint"])
+    logging.info("Pre-registration created:")
+    logging.info("  Chosen:  %s", preregistration["chosen_condition"])
+    logging.info("  Map:     %.4f", preregistration["chosen_map50_95"])
+    logging.info("  Ckpt:    %s", preregistration["chosen_checkpoint"])
 
     return preregistration
 
@@ -149,7 +148,7 @@ def save_preregistration(
     json_path = output_dir / "phase4b_preregistration.json"
     with open(json_path, "w") as f:
         json.dump(preregistration, f, indent=2)
-    logger.info("Pre-registration JSON saved → %s", json_path)
+    logging.info("Pre-registration JSON saved → %s", json_path)
 
     # TXT
     txt_path = output_dir / "phase4b_preregistration.txt"
@@ -174,7 +173,7 @@ def save_preregistration(
         f.write("    - D2 (head fine-tuning from best learned soup)\n")
         f.write("    - C3 (final pipeline run)\n")
         f.write("  Do NOT change this selection after this point.\n")
-    logger.info("Pre-registration TXT saved → %s", txt_path)
+    logging.info("Pre-registration TXT saved → %s", txt_path)
 
     return json_path, txt_path
 
@@ -197,7 +196,14 @@ def main():
         default=RESULTS_DIR,
         help="Directory to save pre-registration files",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging for debugging",
+    )
     args = parser.parse_args()
+
+    setup_logging(level=logging.DEBUG if args.verbose else logging.INFO, filename="phase4b_preregistration.log", use_stdout=True)
 
     # Pre-register
     preregistration = preregister_best_learned_soup(args.soup_results_json)
@@ -205,20 +211,16 @@ def main():
     # Save
     json_path, txt_path = save_preregistration(preregistration, args.output_dir)
 
-    logger.info("="*80)
-    logger.info("PRE-REGISTRATION COMPLETE")
-    logger.info("="*80)
-    logger.info("Files saved:")
-    logger.info("  JSON: %s", json_path)
-    logger.info("  TXT:  %s", txt_path)
-    logger.info("Next step: Use chosen checkpoint for D2 and C3 in Phase 5")
+    logging.info("="*80)
+    logging.info("PRE-REGISTRATION COMPLETE")
+    logging.info("="*80)
+    logging.info("Files saved:")
+    logging.info("  JSON: %s", json_path)
+    logging.info("  TXT:  %s", txt_path)
+    logging.info("Next step: Use chosen checkpoint for D2 and C3 in Phase 5")
 
     return preregistration
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[%(asctime)s] [%(name)s] %(levelname)s: %(message)s",
-    )
     main()

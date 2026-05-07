@@ -40,16 +40,9 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-logger = logging.getLogger(__name__)
+from yolof_soup.utils.logging_utils import setup_logging
 
-
-def setup_logging(verbose: bool = False) -> None:
-    """Configure logging."""
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="[%(asctime)s] [%(name)s] %(levelname)s: %(message)s",
-    )
+logger = setup_logging(logging.INFO, filename="run_phases_2b_to_7.log", use_stdout=True)
 
 
 def run_phase_2b(
@@ -285,7 +278,7 @@ Examples:
 
     args = parser.parse_args()
 
-    setup_logging(args.verbose)
+    logger.setLevel(logging.DEBUG if args.verbose else logging.INFO)
 
     # Show config if requested
     if args.show_config:

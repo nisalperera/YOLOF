@@ -55,8 +55,7 @@ from yolof_soup.utils.key_utils import (
     merge_subdicts,
     split_decoder_subheads,
 )
-
-logger = logging.getLogger(__name__)
+from yolof_soup.utils.logging_utils import setup_logging
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Hyperparameters (can be adjusted)
@@ -95,9 +94,9 @@ def build_condition_1_global_uniform(
     M1 (Condition 1): Uniform averaging over entire model.
     θ_soup = (1/N) Σ θ_i
     """
-    logger.info("Building Condition 1 (M1): Global Uniform Averaging")
+    logging.info("Building Condition 1 (M1): Global Uniform Averaging")
     soup = compute_anchor(ingredient_states)
-    logger.info("  ✓ Global uniform soup built. Size: %.2f MB", _state_dict_size_mb(soup))
+    logging.info("  ✓ Global uniform soup built. Size: %.2f MB", _state_dict_size_mb(soup))
     return soup
 
 
@@ -115,7 +114,7 @@ def build_condition_2_branch_uniform(
     Average cls_head uniformly, reg_head uniformly, shared uniformly.
     Keep backbone+encoder from ingredient 0 (same as input).
     """
-    logger.info("Building Condition 2 (M2): Branch-Uniform Averaging")
+    logging.info("Building Condition 2 (M2): Branch-Uniform Averaging")
     
     # Extract decoder keys from first ingredient
     decoder_keys = get_decoder_keys(ingredient_states[0])
@@ -136,7 +135,7 @@ def build_condition_2_branch_uniform(
     
     # Merge all parts
     soup = merge_subdicts(be_dict, cls_avg, reg_avg, shared_avg)
-    logger.info("  ✓ Branch-uniform soup built. Size: %.2f MB", _state_dict_size_mb(soup))
+    logging.info("  ✓ Branch-uniform soup built. Size: %.2f MB", _state_dict_size_mb(soup))
     return soup
 
 
@@ -155,7 +154,7 @@ def build_condition_3_dirichlet_cd(
     Use selection split to find best λ values for cls and reg branches.
     Then construct soup with those weights.
     """
-    logger.info("Building Condition 3 (M3): Dirichlet-Sampled Branch Coefficients (CD Search)")
+    logging.info("Building Condition 3 (M3): Dirichlet-Sampled Branch Coefficients (CD Search)")
     
     # Extract decoder keys and sub-head partitions
     decoder_keys = get_decoder_keys(ingredient_states[0])
@@ -187,7 +186,7 @@ def build_condition_3_dirichlet_cd(
         selection_dataloader, "reg"
     )
     
-    logger.info("  → CD search found: λ_cls=%.3f, λ_reg=%.3f", best_lam_cls, best_lam_reg)
+    logging.info("  → CD search found: λ_cls=%.3f, λ_reg=%.3f", best_lam_cls, best_lam_reg)
     
     # Build final soup with optimal λ values
     cls_merged = apply_uniform_lambdas(anchor_cls, cls_taus, best_lam_cls)
@@ -195,7 +194,7 @@ def build_condition_3_dirichlet_cd(
     shared_merged = apply_uniform_lambdas(anchor_shared, shared_taus, 1.0)  # shared always λ=1.0
     
     soup = merge_subdicts(be_dict, cls_merged, reg_merged, shared_merged)
-    logger.info("  ✓ Dirichlet soup built. Size: %.2f MB", _state_dict_size_mb(soup))
+    logging.info("  ✓ Dirichlet soup built. Size: %.2f MB", _state_dict_size_mb(soup))
     return soup
 
 
@@ -227,13 +226,13 @@ def _coordinate_descent_search(
         
         try:
             map_val = get_map(model, cfg, SELECTION_DATASET, output_dir=Path(RESULTS_DIR) / "cd_search", tag=f"{branch_name}_lam{lam:.2f}")
-            logger.debug("  [CD search %s] λ=%.3f → mAP=%.4f", branch_name, lam, map_val)
+            logging.debug("  [CD search %s] λ=%.3f → mAP=%.4f", branch_name, lam, map_val)
             
             if map_val > best_map:
                 best_map = map_val
                 best_lam = lam
         except Exception as e:
-            logger.warning("  [CD search %s] λ=%.3f → evaluation failed: %s", branch_name, lam, str(e))
+            logging.warning("  [CD search %s] λ=%.3f → evaluation failed: %s", branch_name, lam, str(e))
         finally:
             del model
             torch.cuda.empty_cache()
@@ -254,7 +253,7 @@ def build_condition_4_fisher_weighted(
     Compute Fisher information (or L2 proxy) per ingredient per branch.
     Weight each ingredient inversely by Fisher magnitude.
     """
-    logger.info("Building Condition 4 (M4): Fisher/Hessian-Weighted Branch Coefficients")
+    logging.info("Building Condition 4 (M4): Fisher/Hessian-Weighted Branch Coefficients")
     
     # For now, use L2 norm as proxy for Fisher (deterministic, fast)
     
@@ -273,8 +272,8 @@ def build_condition_4_fisher_weighted(
     reg_weights = _inverse_norm_weights(reg_norms)
     shared_weights = _inverse_norm_weights(shared_norms)
     
-    logger.debug("  Fisher weights: cls=%s", [f"{w:.3f}" for w in cls_weights])
-    logger.debug("  Fisher weights: reg=%s", [f"{w:.3f}" for w in reg_weights])
+    logging.debug("  Fisher weights: cls=%s", [f"{w:.3f}" for w in cls_weights])
+    logging.debug("  Fisher weights: reg=%s", [f"{w:.3f}" for w in reg_weights])
     
     # Weighted merge
     cls_avg = _weighted_average(
@@ -291,7 +290,7 @@ def build_condition_4_fisher_weighted(
     )
     
     soup = merge_subdicts(be_dict, cls_avg, reg_avg, shared_avg)
-    logger.info("  ✓ Fisher-weighted soup built. Size: %.2f MB", _state_dict_size_mb(soup))
+    logging.info("  ✓ Fisher-weighted soup built. Size: %.2f MB", _state_dict_size_mb(soup))
     return soup
 
 
@@ -346,7 +345,7 @@ def evaluate_condition(
             "per_class_ap": [80-element list],
         }
     """
-    logger.info("Evaluating condition %s on eval split...", tag)
+    logging.info("Evaluating condition %s on eval split...", tag)
     
     # Build and load model
     model = build_model_from_config(cfg)
@@ -366,10 +365,10 @@ def evaluate_condition(
         # Extract per-class AP values
         per_class_ap = extract_per_class_ap(results_dict, n_classes=80)
         
-        logger.info("  ✓ Condition %s: mAP50:95=%.4f, mAP50=%.4f, AR@100=%.4f", 
+        logging.info("  ✓ Condition %s: mAP50:95=%.4f, mAP50=%.4f, AR@100=%.4f", 
                    tag, map_val, map50_val, ar100_val)
     except Exception as e:
-        logger.error("  ✗ Evaluation failed for %s: %s", tag, str(e))
+        logging.error("  ✗ Evaluation failed for %s: %s", tag, str(e))
         map_val = 0.0
         map50_val = 0.0
         ar100_val = 0.0
@@ -410,12 +409,12 @@ def run(verbose: bool = True) -> Dict[str, Any]:
     Returns:
         Dict with results for all 4 conditions + metadata
     """
-    if verbose:
-        logging.basicConfig(level=logging.INFO, format="%(levelname)-8s | %(name)s | %(message)s")
     
-    logger.info("=" * 90)
-    logger.info("PHASE 3: SOUP CONSTRUCTION & EVALUATION")
-    logger.info("=" * 90)
+    setup_logging(level=logging.DEBUG if verbose else logging.INFO, filename="phase3_soup_construction.log", use_stdout=True)
+    
+    logging.info("=" * 90)
+    logging.info("PHASE 3: SOUP CONSTRUCTION & EVALUATION")
+    logging.info("=" * 90)
     
     # Setup directories
     results_dir = Path(RESULTS_DIR)
@@ -424,7 +423,7 @@ def run(verbose: bool = True) -> Dict[str, Any]:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
     # Load ingredient checkpoints
-    logger.info("\n[1/6] Loading 6 ingredient checkpoints...")
+    logging.info("\n[1/6] Loading 6 ingredient checkpoints...")
     ingredient_paths = []
     for _run in os.listdir(CHECKPOINT_DIR):
         ingredient_paths.append(Path(CHECKPOINT_DIR) / _run / "model_best.pth")
@@ -432,35 +431,35 @@ def run(verbose: bool = True) -> Dict[str, Any]:
     # Check if paths exist
     missing = [p for p in ingredient_paths if not p.exists()]
     if missing:
-        logger.error("Missing checkpoints: %s", missing)
+        logging.error("Missing checkpoints: %s", missing)
         raise FileNotFoundError(f"Missing phase 2 checkpoints. Expected at: {ingredient_paths[0].parent}/")
     
     ingredient_states = load_states(ingredient_paths)
-    logger.info("  ✓ Loaded 6 ingredients")
+    logging.info("  ✓ Loaded 6 ingredients")
     
     # Build Detectron2 config
-    logger.info("\n[2/6] Building Detectron2 config...")
+    logging.info("\n[2/6] Building Detectron2 config...")
     cfg = build_eval_cfg()
-    logger.info("  ✓ Config ready")
+    logging.info("  ✓ Config ready")
     
     # Build dataloaders
-    logger.info("\n[3/6] Building dataloaders...")
+    logging.info("\n[3/6] Building dataloaders...")
     eval_dataloader = build_eval_dataloader(cfg, EVAL_DATASET)
     selection_dataloader = build_eval_dataloader(cfg, SELECTION_DATASET)
-    logger.info("  ✓ Dataloaders ready")
+    logging.info("  ✓ Dataloaders ready")
     
     # Build all 4 conditions
-    logger.info("\n[4/6] Building 4 soup conditions...")
+    logging.info("\n[4/6] Building 4 soup conditions...")
     condition_1_state = build_condition_1_global_uniform(ingredient_states)
     condition_2_state = build_condition_2_branch_uniform(ingredient_states)
     condition_3_state = build_condition_3_dirichlet_cd(
         ingredient_states, cfg, selection_dataloader
     )
     condition_4_state = build_condition_4_fisher_weighted(ingredient_states)
-    logger.info("  ✓ All 4 conditions built")
+    logging.info("  ✓ All 4 conditions built")
     
     # Evaluate all 4 conditions
-    logger.info("\n[5/6] Evaluating all 4 conditions on eval split...")
+    logging.info("\n[5/6] Evaluating all 4 conditions on eval split...")
     results_cond1 = evaluate_condition(condition_1_state, cfg, "condition_1")
     results_cond2 = evaluate_condition(condition_2_state, cfg, "condition_2")
     results_cond3 = evaluate_condition(condition_3_state, cfg, "condition_3")
@@ -468,7 +467,7 @@ def run(verbose: bool = True) -> Dict[str, Any]:
     
     # Also evaluate best individual (ingredient 0 as reference)
     results_best_individual = evaluate_condition(ingredient_states[0], cfg, "best_individual")
-    logger.info("  ✓ All evaluations complete")
+    logging.info("  ✓ All evaluations complete")
     
     # Determine best learned condition
     map_3 = results_cond3["map50_95"]
@@ -477,13 +476,13 @@ def run(verbose: bool = True) -> Dict[str, Any]:
     best_learned_state = condition_3_state if best_learned_is_cond3 else condition_4_state
     best_learned_tag = "condition_3" if best_learned_is_cond3 else "condition_4"
     
-    logger.info("\nBest learned condition:")
-    logger.info("  → Condition 3 (Dirichlet): mAP50:95=%.4f", map_3)
-    logger.info("  → Condition 4 (Fisher):    mAP50:95=%.4f", map_4)
-    logger.info("  → Best: %s (mAP50:95=%.4f)", best_learned_tag, max(map_3, map_4))
+    logging.info("\nBest learned condition:")
+    logging.info("  → Condition 3 (Dirichlet): mAP50:95=%.4f", map_3)
+    logging.info("  → Condition 4 (Fisher):    mAP50:95=%.4f", map_4)
+    logging.info("  → Best: %s (mAP50:95=%.4f)", best_learned_tag, max(map_3, map_4))
     
     # Save checkpoints
-    logger.info("\n[6/6] Saving checkpoints...")
+    logging.info("\n[6/6] Saving checkpoints...")
     branch_uniform_path = checkpoint_dir / "branch_uniform_soup.pth"
     best_learned_path = checkpoint_dir / "best_learned_soup.pth"
     global_uniform_path = checkpoint_dir / "global_uniform_soup.pth"
@@ -503,10 +502,10 @@ def run(verbose: bool = True) -> Dict[str, Any]:
         condition_1_state,
         metadata={"condition": 1, "method": "global_uniform", "map50_95": results_cond1["map50_95"]},
     )
-    logger.info("  ✓ Checkpoints saved")
+    logging.info("  ✓ Checkpoints saved")
     
     # Compile and save results JSON
-    logger.info("\nSaving results JSON...")
+    logging.info("\nSaving results JSON...")
     results = {
         "condition_1": results_cond1,
         "condition_2": results_cond2,
@@ -523,17 +522,17 @@ def run(verbose: bool = True) -> Dict[str, Any]:
     results_json_path = results_dir / "phase3_soup_results.json"
     with open(results_json_path, "w") as f:
         json.dump(results, f, indent=2)
-    logger.info("  → Results: %s", results_json_path)
+    logging.info("  → Results: %s", results_json_path)
     
-    logger.info("\n" + "=" * 90)
-    logger.info("PHASE 3 COMPLETE")
-    logger.info("=" * 90)
-    logger.info("Outputs:")
-    logger.info("  • Global-uniform soup:   %s", global_uniform_path)
-    logger.info("  • Branch-uniform soup:   %s", branch_uniform_path)
-    logger.info("  • Best learned soup:     %s", best_learned_path)
-    logger.info("  • Results JSON:          %s", results_json_path)
-    logger.info("=" * 90)
+    logging.info("\n" + "=" * 90)
+    logging.info("PHASE 3 COMPLETE")
+    logging.info("=" * 90)
+    logging.info("Outputs:")
+    logging.info("  • Global-uniform soup:   %s", global_uniform_path)
+    logging.info("  • Branch-uniform soup:   %s", branch_uniform_path)
+    logging.info("  • Best learned soup:     %s", best_learned_path)
+    logging.info("  • Results JSON:          %s", results_json_path)
+    logging.info("=" * 90)
     
     return results
 

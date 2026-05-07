@@ -39,8 +39,9 @@ except ImportError:
     _D2_AVAILABLE = False
 
 from yolof.config import get_cfg
+from yolof_soup.utils.logging_utils import setup_logging
 
-logger = logging.getLogger(__name__)
+logger = setup_logging(logging.INFO, filename="config/experiment_config.log", use_stdout=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -269,7 +270,7 @@ SPEARMAN_R_THRESHOLD: float = 0.3
 # 9.  Detectron2 CfgNode factories
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _base_yolof_cfg():
+def _base_yolof_cfg(weights_path: str = PRETRAINED_WEIGHTS):
     """
     Return a CfgNode pre-loaded with the canonical YOLOF-R50-C5-1x defaults.
     All factory functions call this first, then override only what they need.
@@ -297,12 +298,12 @@ def _base_yolof_cfg():
     cfg.DATALOADER.NUM_WORKERS = int(os.environ.get("THESIS_NUM_WORKERS", "4"))
 
     # ── Pretrained weights ────────────────────────────────────────────────────
-    if os.path.isfile(PRETRAINED_WEIGHTS):
-        cfg.MODEL.WEIGHTS = PRETRAINED_WEIGHTS
+    if os.path.isfile(weights_path):
+        cfg.MODEL.WEIGHTS = str(weights_path)
     else:
         logger.warning(
             "Pretrained weights not found at %s — "
-            "training will start from scratch.", PRETRAINED_WEIGHTS
+            "training will start from scratch.", weights_path
         )
 
     return cfg
@@ -321,7 +322,7 @@ def build_eval_cfg(dataset: str = EVAL_DATASET, cfg_file: str | Path = None, wei
         Detectron2 dataset name — one of SELECTION_DATASET, EVAL_DATASET,
         VOC_DATASET, or TRAIN_DATASET.
     """
-    cfg = _base_yolof_cfg()
+    cfg = _base_yolof_cfg(weights_path=weights_path if weights_path else PRETRAINED_WEIGHTS)
 
     if cfg_file:
         if os.path.isfile(cfg_file):

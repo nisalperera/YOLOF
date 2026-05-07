@@ -56,7 +56,7 @@ from yolof_soup.utils.key_utils import (
     split_decoder_subheads,
 )
 
-logger = logging.getLogger(__name__)
+from yolof_soup.utils.logging_utils import setup_logging
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Hyperparameters for fine-tuning
@@ -98,7 +98,7 @@ def freeze_backbone_encoder(model: torch.nn.Module) -> None:
     for name, param in model.named_parameters():
         if "backbone" in name or "encoder" in name:
             param.requires_grad = False
-    logger.info("  ✓ Backbone + encoder frozen")
+    logging.info("  ✓ Backbone + encoder frozen")
 
 
 def count_trainable_params(model: torch.nn.Module) -> int:
@@ -137,13 +137,13 @@ def finetune_head(
     Returns:
         Fine-tuned state-dict (same structure as init_state_dict)
     """
-    logger.info("  Fine-tuning %s for %d epochs (batch_size=%d)...", tag, epochs, batch_size)
+    logging.info("  Fine-tuning %s for %d epochs (batch_size=%d)...", tag, epochs, batch_size)
     
     try:
         from detectron2.engine import DefaultTrainer, create_ddp_model
         from detectron2.data import build_detection_train_loader
     except ImportError:
-        logger.warning("    Detectron2 not available; returning initialized state")
+        logging.warning("    Detectron2 not available; returning initialized state")
         return init_state_dict.copy()
     
     # Create temporary output directory for this fine-tuning run
@@ -168,7 +168,7 @@ def finetune_head(
                 for name, param in model.named_parameters():
                     if any(key in name for key in backbone_keys):
                         param.requires_grad = False
-                logger.info("    ✓ Frozen backbone+encoder parameters")
+                logging.info("    ✓ Frozen backbone+encoder parameters")
             
             # Move to device
             model = model.to(DEVICE)
@@ -203,7 +203,7 @@ def finetune_head(
                     
                     if batch_idx % 50 == 0:
                         avg_loss = total_loss / num_batches
-                        logger.debug("      Epoch %d/%d, Batch %d: loss=%.4f", 
+                        logging.debug("      Epoch %d/%d, Batch %d: loss=%.4f", 
                                    epoch + 1, epochs, batch_idx, avg_loss)
                     
                     # Limit iterations per epoch for speed
@@ -212,11 +212,11 @@ def finetune_head(
             
             # Extract final state dict
             final_state_dict = model.state_dict()
-            logger.info("    ✓ Fine-tuning complete (%.4f avg loss)", total_loss / num_batches)
+            logging.info("    ✓ Fine-tuning complete (%.4f avg loss)", total_loss / num_batches)
             return final_state_dict
             
         except Exception as e:
-            logger.warning("    ✗ Fine-tuning failed: %s. Returning initialized state.", e)
+            logging.warning("    ✗ Fine-tuning failed: %s. Returning initialized state.", e)
             return init_state_dict.copy()
 
 
@@ -235,22 +235,22 @@ def train_d1(
     
     Baseline initialization: weaker (uniform averaging).
     """
-    logger.info("\n[D1] Fine-tuning from Condition 2 (branch-uniform soup)...")
+    logging.info("\n[D1] Fine-tuning from Condition 2 (branch-uniform soup)...")
     
     # Load Condition 2 checkpoint
     cond2_path = checkpoint_dir / "branch_uniform_soup.pth"
     if not cond2_path.exists():
-        logger.warning("  ✗ Condition 2 checkpoint not found: %s", cond2_path)
+        logging.warning("  ✗ Condition 2 checkpoint not found: %s", cond2_path)
         return {"status": "failed", "error": "Condition 2 checkpoint not found"}
     
     cond2_state = load_state(cond2_path)
-    logger.info("  ✓ Loaded Condition 2 checkpoint")
+    logging.info("  ✓ Loaded Condition 2 checkpoint")
     
     # Fine-tune
     d1_state = finetune_head(cond2_state, cfg, epochs=FINETUNE_EPOCHS, batch_size=D1_D2_BATCH_SIZE, tag="D1")
     
     # Evaluate
-    logger.info("  Evaluating D1...")
+    logging.info("  Evaluating D1...")
     try:
         results_dict = compute_coco_map(
             build_model_from_config(cfg), cfg, EVAL_DATASET,
@@ -258,16 +258,16 @@ def train_d1(
         )
         d1_map = float(results_dict.get("AP", 0.0))
         d1_per_class = extract_per_class_ap(results_dict, n_classes=80)
-        logger.info("  ✓ D1: mAP50:95=%.4f", d1_map)
+        logging.info("  ✓ D1: mAP50:95=%.4f", d1_map)
     except Exception as e:
-        logger.error("  ✗ D1 evaluation failed: %s", str(e))
+        logging.error("  ✗ D1 evaluation failed: %s", str(e))
         d1_map = 0.0
         d1_per_class = [0.0] * 80
     
     # Save checkpoint
     d1_path = checkpoint_dir / "d1_finetuned.pth"
     save_checkpoint(d1_path, d1_state, metadata={"phase": "5", "variant": "D1", "map50_95": d1_map})
-    logger.info("  ✓ D1 checkpoint saved: %s", d1_path)
+    logging.info("  ✓ D1 checkpoint saved: %s", d1_path)
     
     return {
         "variant": "D1",
@@ -294,22 +294,22 @@ def train_d2(
     Stronger initialization: best learned condition from Phase 3.
     Tests whether better merge leads to larger fine-tune gains.
     """
-    logger.info("\n[D2] Fine-tuning from best learned soup...")
+    logging.info("\n[D2] Fine-tuning from best learned soup...")
     
     # Load best learned soup checkpoint
     best_learned_path = checkpoint_dir / "best_learned_soup.pth"
     if not best_learned_path.exists():
-        logger.warning("  ✗ Best learned soup checkpoint not found: %s", best_learned_path)
+        logging.warning("  ✗ Best learned soup checkpoint not found: %s", best_learned_path)
         return {"status": "failed", "error": "Best learned soup checkpoint not found"}
     
     best_learned_state = load_state(best_learned_path)
-    logger.info("  ✓ Loaded best learned soup checkpoint")
+    logging.info("  ✓ Loaded best learned soup checkpoint")
     
     # Fine-tune
     d2_state = finetune_head(best_learned_state, cfg, epochs=FINETUNE_EPOCHS, batch_size=D1_D2_BATCH_SIZE, tag="D2")
     
     # Evaluate
-    logger.info("  Evaluating D2...")
+    logging.info("  Evaluating D2...")
     try:
         results_dict = compute_coco_map(
             build_model_from_config(cfg), cfg, EVAL_DATASET,
@@ -317,16 +317,16 @@ def train_d2(
         )
         d2_map = float(results_dict.get("AP", 0.0))
         d2_per_class = extract_per_class_ap(results_dict, n_classes=80)
-        logger.info("  ✓ D2: mAP50:95=%.4f", d2_map)
+        logging.info("  ✓ D2: mAP50:95=%.4f", d2_map)
     except Exception as e:
-        logger.error("  ✗ D2 evaluation failed: %s", str(e))
+        logging.error("  ✗ D2 evaluation failed: %s", str(e))
         d2_map = 0.0
         d2_per_class = [0.0] * 80
     
     # Save checkpoint
     d2_path = checkpoint_dir / "d2_finetuned.pth"
     save_checkpoint(d2_path, d2_state, metadata={"phase": "5", "variant": "D2", "map50_95": d2_map})
-    logger.info("  ✓ D2 checkpoint saved: %s", d2_path)
+    logging.info("  ✓ D2 checkpoint saved: %s", d2_path)
     
     return {
         "variant": "D2",
@@ -354,26 +354,26 @@ def train_c3(
     - Stage 2: Best learned decoder merge (from Phase 3)
     - Stage 3: Head fine-tuning with largest batch (batch_size=128)
     """
-    logger.info("\n[C3] Full pipeline (backbone+encoder + learned decoder + fine-tune)...")
+    logging.info("\n[C3] Full pipeline (backbone+encoder + learned decoder + fine-tune)...")
     
     # Load components
-    logger.info("  Loading components...")
+    logging.info("  Loading components...")
     
     # TODO: Load backbone+encoder from Phase 1
     # For now, use best learned soup as proxy (assumes backbone+encoder already optimal)
     best_learned_path = checkpoint_dir / "best_learned_soup.pth"
     if not best_learned_path.exists():
-        logger.warning("  ✗ Best learned soup checkpoint not found: %s", best_learned_path)
+        logging.warning("  ✗ Best learned soup checkpoint not found: %s", best_learned_path)
         return {"status": "failed", "error": "Best learned soup checkpoint not found"}
     
     c3_state = load_state(best_learned_path)
-    logger.info("  ✓ Loaded best learned soup (backbone+encoder already merged)")
+    logging.info("  ✓ Loaded best learned soup (backbone+encoder already merged)")
     
     # Fine-tune with larger batch
     c3_state = finetune_head(c3_state, cfg, epochs=FINETUNE_EPOCHS, batch_size=C3_BATCH_SIZE, tag="C3")
     
     # Evaluate
-    logger.info("  Evaluating C3...")
+    logging.info("  Evaluating C3...")
     try:
         results_dict = compute_coco_map(
             build_model_from_config(cfg), cfg, EVAL_DATASET,
@@ -381,16 +381,16 @@ def train_c3(
         )
         c3_map = float(results_dict.get("AP", 0.0))
         c3_per_class = extract_per_class_ap(results_dict, n_classes=80)
-        logger.info("  ✓ C3: mAP50:95=%.4f", c3_map)
+        logging.info("  ✓ C3: mAP50:95=%.4f", c3_map)
     except Exception as e:
-        logger.error("  ✗ C3 evaluation failed: %s", str(e))
+        logging.error("  ✗ C3 evaluation failed: %s", str(e))
         c3_map = 0.0
         c3_per_class = [0.0] * 80
     
     # Save checkpoint
     c3_path = checkpoint_dir / "c3_pipeline.pth"
     save_checkpoint(c3_path, c3_state, metadata={"phase": "5", "variant": "C3", "map50_95": c3_map})
-    logger.info("  ✓ C3 checkpoint saved: %s", c3_path)
+    logging.info("  ✓ C3 checkpoint saved: %s", c3_path)
     
     return {
         "variant": "C3",
@@ -405,7 +405,7 @@ def train_c3(
 # Main entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_phase5(verbose: bool = True) -> Dict[str, Any]:
+def run(verbose: bool = True) -> Dict[str, Any]:
     """
     Main Phase 5 entry point.
     
@@ -415,12 +415,12 @@ def run_phase5(verbose: bool = True) -> Dict[str, Any]:
     Returns:
         Dict with results for D1, D2, C3
     """
-    if verbose:
-        logging.basicConfig(level=logging.INFO, format="%(levelname)-8s | %(name)s | %(message)s")
     
-    logger.info("=" * 90)
-    logger.info("PHASE 5: HEAD FINE-TUNING TRAINING (D1, D2, C3)")
-    logger.info("=" * 90)
+    setup_logging(level=logging.DEBUG if verbose else logging.INFO, filename="phase5_finetuning.log", use_stdout=True)
+    
+    logging.info("=" * 90)
+    logging.info("PHASE 5: HEAD FINE-TUNING TRAINING (D1, D2, C3)")
+    logging.info("=" * 90)
     
     # Setup directories
     results_dir = Path(RESULTS_DIR)
@@ -428,35 +428,35 @@ def run_phase5(verbose: bool = True) -> Dict[str, Any]:
     checkpoint_dir = Path(CHECKPOINT_DIR)
     
     # Build Detectron2 config
-    logger.info("\n[Setup] Building Detectron2 config...")
+    logging.info("\n[Setup] Building Detectron2 config...")
     cfg = build_eval_cfg()
-    logger.info("  ✓ Config ready")
+    logging.info("  ✓ Config ready")
     
     # Build evaluation dataloader
-    logger.info("\n[Setup] Building evaluation dataloader...")
+    logging.info("\n[Setup] Building evaluation dataloader...")
     eval_dataloader = build_eval_dataloader(cfg, EVAL_DATASET)
-    logger.info("  ✓ Dataloader ready")
+    logging.info("  ✓ Dataloader ready")
     
     # Train D1
-    logger.info("\n[1/3] Training D1...")
+    logging.info("\n[1/3] Training D1...")
     d1_results = train_d1(cfg, eval_dataloader, checkpoint_dir, results_dir)
     
     # Train D2
-    logger.info("\n[2/3] Training D2...")
+    logging.info("\n[2/3] Training D2...")
     d2_results = train_d2(cfg, eval_dataloader, checkpoint_dir, results_dir)
     
     # Train C3
-    logger.info("\n[3/3] Training C3...")
+    logging.info("\n[3/3] Training C3...")
     c3_results = train_c3(cfg, eval_dataloader, checkpoint_dir, results_dir)
     
     # Compile results
-    logger.info("\n\nResults Summary:")
-    logger.info("  D1 (condition 2 baseline): mAP50:95=%.4f", d1_results.get("map50_95", 0.0))
-    logger.info("  D2 (best learned):         mAP50:95=%.4f", d2_results.get("map50_95", 0.0))
-    logger.info("  C3 (full pipeline):        mAP50:95=%.4f", c3_results.get("map50_95", 0.0))
+    logging.info("\n\nResults Summary:")
+    logging.info("  D1 (condition 2 baseline): mAP50:95=%.4f", d1_results.get("map50_95", 0.0))
+    logging.info("  D2 (best learned):         mAP50:95=%.4f", d2_results.get("map50_95", 0.0))
+    logging.info("  C3 (full pipeline):        mAP50:95=%.4f", c3_results.get("map50_95", 0.0))
     
     # Save results
-    logger.info("\nSaving results...")
+    logging.info("\nSaving results...")
     results = {
         "d1": d1_results,
         "d2": d2_results,
@@ -472,20 +472,20 @@ def run_phase5(verbose: bool = True) -> Dict[str, Any]:
     results_json = results_dir / "phase5_finetuning_results.json"
     with open(results_json, "w") as f:
         json.dump(results, f, indent=2, default=str)
-    logger.info("  → Results: %s", results_json)
+    logging.info("  → Results: %s", results_json)
     
-    logger.info("\n" + "=" * 90)
-    logger.info("PHASE 5 COMPLETE")
-    logger.info("=" * 90)
-    logger.info("Outputs:")
-    logger.info("  • D1 checkpoint:        %s", checkpoint_dir / "d1_finetuned.pth")
-    logger.info("  • D2 checkpoint:        %s", checkpoint_dir / "d2_finetuned.pth")
-    logger.info("  • C3 checkpoint:        %s", checkpoint_dir / "c3_pipeline.pth")
-    logger.info("  • Results JSON:         %s", results_json)
-    logger.info("=" * 90)
+    logging.info("\n" + "=" * 90)
+    logging.info("PHASE 5 COMPLETE")
+    logging.info("=" * 90)
+    logging.info("Outputs:")
+    logging.info("  • D1 checkpoint:        %s", checkpoint_dir / "d1_finetuned.pth")
+    logging.info("  • D2 checkpoint:        %s", checkpoint_dir / "d2_finetuned.pth")
+    logging.info("  • C3 checkpoint:        %s", checkpoint_dir / "c3_pipeline.pth")
+    logging.info("  • Results JSON:         %s", results_json)
+    logging.info("=" * 90)
     
     return results
 
 
 if __name__ == "__main__":
-    run_phase5(verbose=True)
+    run(verbose=True)
