@@ -180,9 +180,7 @@ N_INGREDIENTS: int = int(os.environ.get("THESIS_N_INGREDIENTS", "6"))
 #: Pre-trained COCO weights to initialise Phase 1 from.
 #:  • Download from: https://github.com/chensnathan/YOLOF
 #:  • Place at:      checkpoints/pretrained/yolof_R_50_C5_1x.pth
-PRETRAINED_WEIGHTS: str = os.path.join(
-    CHECKPOINT_DIR, "pretrained", "yolof_R_50_DC5_1x.pth"
-)
+PRETRAINED_WEIGHTS: str = "/home/nisalperera/YOLOF/models/YOLOF_R50_DC5_1x.pth"
 
 YOLOF_BASE_YAML = os.path.join(
         os.environ.get("YOLOF_CONFIG_DIR",
@@ -312,7 +310,7 @@ def _base_yolof_cfg(weights_path: str = PRETRAINED_WEIGHTS):
 
 # ── Evaluation / inference config ─────────────────────────────────────────────
 
-def build_eval_cfg(dataset: str = EVAL_DATASET, cfg_file: str | Path = YOLOF_BASE_YAML, weights_path: str | Path = None):
+def build_eval_cfg(dataset: str = EVAL_DATASET, cfg_file: str | Path = YOLOF_BASE_YAML, weights_path: str | Path = PRETRAINED_WEIGHTS):
     """
     Lightweight CfgNode for inference-only passes (soup evaluation,
     loss landscape measurement, cross-domain evaluation).

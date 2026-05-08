@@ -487,8 +487,10 @@ def run(verbose: bool = True) -> Dict[str, Any]:
     logger.info("\n[4/6] Building 4 soup conditions...")
     condition_1_state = build_condition_1_global_uniform(ingredient_states)
     results_cond1 = evaluate_condition(condition_1_state, cfg, "condition_1")
+
     condition_2_state = build_condition_2_branch_uniform(ingredient_states)
     results_cond2 = evaluate_condition(condition_2_state, cfg, "condition_2")
+    
     condition_3_state = build_condition_3_dirichlet_cd(
         ingredient_states, cfg, selection_dataloader
     )

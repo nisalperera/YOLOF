@@ -106,16 +106,20 @@ def compute_anchor(
     """
     if not state_dicts:
         raise ValueError("state_dicts must be non-empty.")
+    
     anchor: Dict[str, torch.Tensor] = {}
+    _BN_BUFFERS = ("running_mean", "running_var", "num_batches_tracked")
+
     for k in state_dicts[0]:
-        if torch.is_floating_point(state_dicts[0][k]):
+        is_bn = any(k.endswith(s) for s in _BN_BUFFERS)
+        if torch.is_floating_point(state_dicts[0][k]) and not is_bn:
             anchor[k] = (
                 torch.stack([sd[k].float() for sd in state_dicts])
                 .mean(0)
                 .to(state_dicts[0][k].dtype)
             )
         else:
-            anchor[k] = state_dicts[0][k].clone()
+            anchor[k] = state_dicts[0][k].clone()  # best model's BN stats
     return anchor
 
 

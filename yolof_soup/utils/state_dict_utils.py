@@ -45,4 +45,4 @@ def assign_state_to_model(
     
     # Apply update
     model_state.update(state_dict)
-    model.load_state_dict(model_state, strict=False)  # strict=False to allow missing keys
+    model.load_state_dict(model_state, strict=True)  # strict=True to ensure all keys are present
