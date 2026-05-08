@@ -8,6 +8,13 @@ Boundary definition is authoritative:
   (keys starting with "backbone." or "encoder.")
 
 Decoder sub-head patterns match yolof/modeling/decoder/ attribute names.
+
+Fix log:
+  - compute_anchor: BN running_mean / running_var are no longer averaged;
+    they are taken from the FIRST (best) state-dict to avoid corrupted
+    normalisation statistics that caused NaN evaluations.
+  - compute_anchor: added key-consistency guard across all N state-dicts.
+  - apply_subhead_lambdas: no changes needed (was already correct).
 """
 
 from __future__ import annotations
@@ -28,6 +35,14 @@ _CLS_PATTERNS: Tuple[str, ...] = (
 _REG_PATTERNS: Tuple[str, ...] = (
     "bbox_subnet", "bbox_pred", "reg_pred",
     "box_reg", "regression", "delta",
+)
+
+# BN buffers must NOT be averaged across models — they are activation
+# statistics that are meaningless when mixed between different training runs.
+_BN_BUFFER_SUFFIXES: Tuple[str, ...] = (
+    "running_mean",
+    "running_var",
+    "num_batches_tracked",
 )
 
 
@@ -95,27 +110,52 @@ def merge_subdicts(*subdicts: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor
 
 # ── Task-vector arithmetic ────────────────────────────────
 
+def _is_bn_buffer(key: str) -> bool:
+    """Return True if *key* identifies a BatchNorm running statistic."""
+    return any(key.endswith(s) for s in _BN_BUFFER_SUFFIXES)
+
+
 def compute_anchor(
     state_dicts: List[Dict[str, torch.Tensor]],
 ) -> Dict[str, torch.Tensor]:
     """
     θ̄ = (1/N) Σ θ_i  (element-wise mean over N state-dicts).
 
-    Floating-point params are averaged; integer buffers (e.g.
-    num_batches_tracked) are taken from the first state-dict unchanged.
+    Rules:
+      • Floating-point parameters          → averaged across all N models.
+      • BatchNorm running_mean / running_var → taken from the FIRST state-dict
+        (the best-performing ingredient). Averaging these buffers produces
+        statistically invalid activation statistics and causes NaN evaluation.
+      • Integer buffers (num_batches_tracked etc.) → taken from first unchanged.
+
+    Raises:
+      ValueError: if state_dicts is empty.
+      KeyError:   if any state-dict has a different key-set than state_dicts[0].
     """
     if not state_dicts:
         raise ValueError("state_dicts must be non-empty.")
+
+    # Key-consistency guard
+    ref_keys = set(state_dicts[0].keys())
+    for i, sd in enumerate(state_dicts[1:], 1):
+        if set(sd.keys()) != ref_keys:
+            diff = ref_keys.symmetric_difference(sd.keys())
+            raise KeyError(
+                f"state_dict[{i}] has mismatched keys (first 5 diff): "
+                f"{sorted(diff)[:5]}"
+            )
+
     anchor: Dict[str, torch.Tensor] = {}
     for k in state_dicts[0]:
-        if torch.is_floating_point(state_dicts[0][k]):
+        if _is_bn_buffer(k) or not torch.is_floating_point(state_dicts[0][k]):
+            # BN buffers and integer tensors: preserve from the first (best) model
+            anchor[k] = state_dicts[0][k].clone()
+        else:
             anchor[k] = (
                 torch.stack([sd[k].float() for sd in state_dicts])
                 .mean(0)
                 .to(state_dicts[0][k].dtype)
             )
-        else:
-            anchor[k] = state_dicts[0][k].clone()
     return anchor
 
 
@@ -126,16 +166,17 @@ def compute_task_vectors(
     """
     τ_i = θ_i − θ̄  for each fine-tuned state-dict.
 
-    Integer buffers receive a zero task-vector.
+    BN buffers and integer buffers receive a zero task-vector
+    (they are not averaged, so no offset makes sense).
     """
     taus = []
     for sd in state_dicts:
         tau: Dict[str, torch.Tensor] = {}
         for k in sd:
-            if torch.is_floating_point(sd[k]):
-                tau[k] = (sd[k].float() - anchor[k].float()).to(sd[k].dtype)
-            else:
+            if _is_bn_buffer(k) or not torch.is_floating_point(sd[k]):
                 tau[k] = torch.zeros_like(sd[k])
+            else:
+                tau[k] = (sd[k].float() - anchor[k].float()).to(sd[k].dtype)
         taus.append(tau)
     return taus
 
@@ -148,16 +189,17 @@ def apply_uniform_lambdas(
     """
     θ_soup = θ̄ + λ · Σ_i τ_i   (uniform scalar λ for all parameters).
     lam=1.0 produces the standard uniform average soup.
+    BN buffers are passed through unchanged from the anchor.
     """
     soup: Dict[str, torch.Tensor] = {}
     for k in anchor:
-        if torch.is_floating_point(anchor[k]):
+        if _is_bn_buffer(k) or not torch.is_floating_point(anchor[k]):
+            soup[k] = anchor[k].clone()
+        else:
             v = anchor[k].float().clone()
             for tau in taus:
                 v = v + lam * tau[k].float()
             soup[k] = v.to(anchor[k].dtype)
-        else:
-            soup[k] = anchor[k].clone()
     return soup
 
 
@@ -177,6 +219,7 @@ def apply_subhead_lambdas(
       θ_soup[k] = θ̄[k] + Σ_i λ_reg_i · τ_i[k]           k ∈ reg_keys
       θ_soup[k] = θ̄[k] + Σ_i ½(λ_cls_i+λ_reg_i)·τ_i[k] k ∈ shared_keys
 
+    BN buffers are passed through unchanged from the anchor.
     Returns a decoder-only state-dict (does NOT include backbone/encoder keys).
     """
     N = len(taus)
@@ -188,7 +231,7 @@ def apply_subhead_lambdas(
 
     def _merge(keys: List[str], lams: List[float]) -> None:
         for k in keys:
-            if not torch.is_floating_point(anchor[k]):
+            if _is_bn_buffer(k) or not torch.is_floating_point(anchor[k]):
                 result[k] = anchor[k].clone()
                 return
             v = anchor[k].float().clone()
@@ -200,3 +243,42 @@ def apply_subhead_lambdas(
     _merge(reg_keys,    lambdas_reg)
     _merge(shared_keys, shared_lams)
     return result
+
+
+def calibrate_bn(
+    model: "torch.nn.Module",
+    dataloader,
+    n_batches: int = 50,
+    device: str = "cuda",
+) -> None:
+    """
+    Recompute BatchNorm running statistics for a merged soup model.
+
+    After weight averaging, BN running_mean and running_var no longer
+    correspond to the actual activation distributions of the soup model.
+    This function restores them by running a short forward pass in train
+    mode (which re-accumulates the EMA stats) then switches back to eval.
+
+    Args:
+        model:      The merged soup model (already loaded with soup weights).
+        dataloader: Any dataloader that produces batches compatible with
+                    the model's forward signature.
+        n_batches:  Number of mini-batches to process (50 is sufficient
+                    for ResNet-based backbones).
+        device:     Device string for the model.
+    """
+    model.to(device)
+    model.train()  # enables EMA accumulation in BN layers
+    logger.info("Calibrating BN statistics (%d batches)…", n_batches)
+    processed = 0
+    with torch.no_grad():
+        for batch in dataloader:
+            if processed >= n_batches:
+                break
+            try:
+                model(batch)
+            except Exception as e:
+                logger.warning("BN calibration batch %d failed: %s", processed, e)
+            processed += 1
+    model.eval()
+    logger.info("BN calibration complete (%d batches processed).", processed)

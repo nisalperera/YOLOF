@@ -14,13 +14,19 @@ Wraps:
   yolof.analysis.mode_connectivity.evaluate_loss_on_dataset
   yolof.data.YOLOFDatasetMapper
   yolof.data.samplers.EvenlyDistributedInferenceSampler
+
+Fix log:
+  - extract_per_class_ap: corrected the 80-class COCO category list;
+    the previous list contained two placeholder "??" entries at the end
+    caused by a category-index off-by-one, resulting in wrong per-class
+    AP extraction for 'hair drier' (idx 78) and 'toothbrush' (idx 79).
 """
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import torch
 from detectron2.data import DatasetCatalog, build_detection_test_loader
@@ -33,6 +39,28 @@ from yolof.evaluation.coco_ar_ap import COCOEvaluatorWithAPandAR
 from yolof_soup.utils.global_logger import get_logger
 
 logger = get_logger()
+
+# Canonical 80-class COCO category list (indices 0–79, contiguous).
+# Source: COCO API categories sorted by contiguous id.
+_COCO_CATEGORIES: List[str] = [
+    "person", "bicycle", "car", "motorcycle", "airplane",
+    "bus", "train", "truck", "boat", "traffic light",
+    "fire hydrant", "stop sign", "parking meter", "bench", "bird",
+    "cat", "dog", "horse", "sheep", "cow",
+    "elephant", "bear", "zebra", "giraffe", "backpack",
+    "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat",
+    "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle",
+    "wine glass", "cup", "fork", "knife", "spoon",
+    "bowl", "banana", "apple", "sandwich", "orange",
+    "broccoli", "carrot", "hot dog", "pizza", "donut",
+    "cake", "chair", "couch", "potted plant", "bed",
+    "dining table", "toilet", "tv", "laptop", "mouse",
+    "remote", "keyboard", "cell phone", "microwave", "oven",
+    "toaster", "sink", "refrigerator", "book", "clock",
+    "vase", "scissors", "teddy bear", "hair drier", "toothbrush",
+]
+assert len(_COCO_CATEGORIES) == 80, "COCO category list must have exactly 80 entries."
 
 
 def build_eval_dataloader(cfg, dataset_name: Optional[str] = None):
@@ -95,56 +123,41 @@ def get_map(
 
 def extract_per_class_ap(
     results_dict: Dict[str, float],
-    categories: list[str] = [],
-) -> list[float]:
+    categories: Optional[List[str]] = None,
+) -> List[float]:
     """
     Extract per-class AP values from COCO evaluator results dict.
-    
-    The evaluator stores results as "AP-{class_id}" for each of 80 COCO classes.
-    This function extracts them in order (0-79) and returns as a list.
-    
+
+    The evaluator stores results as "AP-{class_name}" for each of the
+    80 contiguous COCO classes.  This function maps them back to a
+    length-80 list in canonical category order.
+
     Args:
-        results_dict: Dict returned from compute_coco_map() containing AP values
-        n_classes: Number of COCO classes (default 80)
-    
+        results_dict: Dict returned from compute_coco_map().
+        categories:   Optional override for the category list.  Defaults
+                      to the canonical 80-class COCO list.
+
     Returns:
-        List of float AP values, one per class (indices 0-79)
-        Missing classes are filled with 0.0
+        List[float] of length 80; missing classes are filled with 0.0.
     """
-    if not len(categories):
-        categories = [
-                "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
-                "fire hydrant", "stop sign", "parking meter", "bench", "cat", "dog", "horse", "sheep", "cow", "elephant",
-                "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis",
-                "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle", "wine glass",
-                "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange", "broccoli",
-                "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch", "potted plant", "bed", "dining table",
-                "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "microwave", "oven", "toaster", "sink",
-                "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush", "??", "??"
-            ]
-        
-    per_class_ap = []
-    for class_idx in range(len(categories)):
-        # Try to find AP-{class_idx} key
-        key = f"AP-{class_idx}"
-        ap_val = results_dict.get(key, 0.0)
-        per_class_ap.append(float(ap_val))
-    
-    # If no AP-{class_idx} keys found, try AP-{class_name} keys
-    if all(ap == 0.0 for ap in per_class_ap):
-        # Build list from class names if available
-        logger.debug("No AP-{class_idx} keys found in results; trying AP-{class_name} keys")
-        try:
-            # Try to get COCO class names
-            # This assumes the dataset is registered with Detectron2
-            # For COCO, class names are stored in MetadataCatalog
-            for class_idx, class_name in enumerate(categories):
-                key = f"AP-{class_name}"
-                ap_val = results_dict.get(key, 0.0)
-                per_class_ap[class_idx] = float(ap_val)
-        except Exception as e:
-            logger.warning("Failed to extract per-class AP from results: %s", str(e))
-    
+    cats = categories if categories is not None else _COCO_CATEGORIES
+    per_class_ap: List[float] = []
+
+    for class_name in cats:
+        key = f"AP-{class_name}"
+        per_class_ap.append(float(results_dict.get(key, 0.0)))
+
+    if all(v == 0.0 for v in per_class_ap):
+        # Fallback: some evaluators use integer class-index keys
+        logger.debug(
+            "No AP-{class_name} keys found in results; "
+            "falling back to AP-{class_idx} keys."
+        )
+        per_class_ap = [
+            float(results_dict.get(f"AP-{idx}", 0.0))
+            for idx in range(len(cats))
+        ]
+
     return per_class_ap
 
 

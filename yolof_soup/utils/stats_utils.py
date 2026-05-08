@@ -11,6 +11,11 @@ All statistical tests required by the thesis methodology.
   General  bootstrap_ci()
 
 Dependencies: scipy, numpy (already required by YOLOF).
+
+Fix log:
+  - compare_domain_gains / H4: h4_supported now correctly requires BOTH
+    delta_voc > delta_coco AND ci_voc_excludes_zero, consistent with the
+    docstring decision criterion.
 """
 
 from __future__ import annotations
@@ -193,9 +198,27 @@ def compare_domain_gains(
 
     Returns:
         Dict with H4 verdict and supporting statistics.
+
+    Fix:
+        H4 is supported ONLY when BOTH delta_voc > delta_coco AND the
+        VOC bootstrap CI excludes zero.  Previously only the directional
+        condition was checked, making the test inconsistent with the
+        stated methodology criterion.
     """
-    rel   = delta_voc - delta_coco
-    ci_ok = bool(ci_voc["lower"] > 0.0) if ci_voc and "lower" in ci_voc else None
+    rel        = delta_voc - delta_coco
+    ci_ok: Optional[bool]
+    if ci_voc and "lower" in ci_voc:
+        ci_ok = bool(ci_voc["lower"] > 0.0)
+    else:
+        ci_ok = None
+        logger.warning(
+            "compare_domain_gains: ci_voc not provided; "
+            "h4_supported will be set to False until CI is available."
+        )
+
+    # H4 requires BOTH conditions to be satisfied
+    h4_supported = bool(rel > 0 and ci_ok is True)
+
     return dict(
         test                  = "Cross-domain gain comparison",
         delta_coco            = float(delta_coco),
@@ -203,9 +226,11 @@ def compare_domain_gains(
         relative_gain_voc     = float(rel),
         h4_direction          = "cross-domain > in-domain" if rel > 0 else "in-domain >= cross-domain",
         ci_voc_excludes_zero  = ci_ok,
-        h4_supported          = bool(rel > 0),
-        note = ("H4 requires delta_voc > delta_coco AND ci_voc above zero. "
-                "Failure falsifies H4 but does not affect H1."),
+        h4_supported          = h4_supported,
+        note = (
+            "H4 requires BOTH delta_voc > delta_coco AND ci_voc lower bound > 0. "
+            "Failure of either condition falsifies H4 but does not affect H1."
+        ),
     )
 
 
