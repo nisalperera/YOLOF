@@ -24,7 +24,7 @@ from yolof_soup.utils import (
     bootstrap_ci,
     compare_domain_gains,
 )
-from yolof_soup.utils.logging_utils import setup_logging
+from yolof_soup.utils.global_logger import configure_logger
 
 
 def build_model_with_state(full_state: dict, device):
@@ -36,10 +36,10 @@ def build_model_with_state(full_state: dict, device):
 
 
 def main():
-    setup_logging(level=logging.INFO, filename="phase5_cross_domain.log", use_stdout=True)
-    logging.info("=" * 60)
-    logging.info("Phase 5: Cross-Domain Evaluation (Pascal VOC 2007)")
-    logging.info("=" * 60)
+    logger = configure_logger(level=logging.INFO, add_file_handler=True, log_file="phase5_cross_domain.log")
+    logger.info("=" * 60)
+    logger.info("Phase 5: Cross-Domain Evaluation (Pascal VOC 2007)")
+    logger.info("=" * 60)
 
     head_state   = load_state(f"{CHECKPOINT_DIR}/learned_head_soup.pth")
     global_state = load_state(f"{CHECKPOINT_DIR}/global_uniform_soup.pth")

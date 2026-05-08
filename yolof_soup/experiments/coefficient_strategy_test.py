@@ -49,7 +49,7 @@ import numpy as np
 from scipy import stats
 
 from yolof_soup.config.experiment_config import RESULTS_DIR
-from yolof_soup.utils.logging_utils import setup_logging
+from yolof_soup.utils.global_logger import configure_logger
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -265,21 +265,21 @@ def run(verbose: bool = True) -> Dict[str, Any]:
         Dict with results for all three tests
     """
     
-    setup_logging(level=logging.DEBUG if verbose else logging.INFO, filename="rq3_test.log", use_stdout=True)
+    logger = configure_logger(level=logging.DEBUG if verbose else logging.INFO, add_file_handler=True, log_file="rq3_test.log")
     
-    logging.info("=" * 90)
-    logging.info("RQ3: COEFFICIENT STRATEGY TESTS")
-    logging.info("=" * 90)
+    logger.info("=" * 90)
+    logger.info("RQ3: COEFFICIENT STRATEGY TESTS")
+    logger.info("=" * 90)
     
     # Setup directories
     results_dir = Path(RESULTS_DIR)
     results_dir.mkdir(parents=True, exist_ok=True)
     
     # Load Phase 3 results
-    logging.info("\n[1/4] Loading Phase 3 results...")
+    logger.info("\n[1/4] Loading Phase 3 results...")
     phase3_json = results_dir / "phase3_soup_results.json"
     if not phase3_json.exists():
-        logging.error("  ✗ Phase 3 results not found: %s", phase3_json)
+        logger.error("  ✗ Phase 3 results not found: %s", phase3_json)
         return {"error": "Phase 3 results not found"}
     
     with open(phase3_json, "r") as f:

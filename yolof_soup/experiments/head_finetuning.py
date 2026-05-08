@@ -56,7 +56,7 @@ from yolof_soup.utils.key_utils import (
     split_decoder_subheads,
 )
 
-from yolof_soup.utils.logging_utils import setup_logging
+from yolof_soup.utils.global_logger import configure_logger
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Hyperparameters for fine-tuning
@@ -416,11 +416,11 @@ def run(verbose: bool = True) -> Dict[str, Any]:
         Dict with results for D1, D2, C3
     """
     
-    setup_logging(level=logging.DEBUG if verbose else logging.INFO, filename="phase5_finetuning.log", use_stdout=True)
+    logger = configure_logger(level=logging.DEBUG if verbose else logging.INFO, add_file_handler=True, log_file="phase5_finetuning.log")
     
-    logging.info("=" * 90)
-    logging.info("PHASE 5: HEAD FINE-TUNING TRAINING (D1, D2, C3)")
-    logging.info("=" * 90)
+    logger.info("=" * 90)
+    logger.info("PHASE 5: HEAD FINE-TUNING TRAINING (D1, D2, C3)")
+    logger.info("=" * 90)
     
     # Setup directories
     results_dir = Path(RESULTS_DIR)
@@ -428,9 +428,9 @@ def run(verbose: bool = True) -> Dict[str, Any]:
     checkpoint_dir = Path(CHECKPOINT_DIR)
     
     # Build Detectron2 config
-    logging.info("\n[Setup] Building Detectron2 config...")
+    logger.info("\n[Setup] Building Detectron2 config...")
     cfg = build_eval_cfg()
-    logging.info("  ✓ Config ready")
+    logger.info("  ✓ Config ready")
     
     # Build evaluation dataloader
     logging.info("\n[Setup] Building evaluation dataloader...")

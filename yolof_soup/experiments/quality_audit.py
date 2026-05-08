@@ -27,16 +27,13 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from detectron2.modeling import build_model
-
 from yolof_soup.config.experiment_config import RESULTS_DIR, EVAL_DATASET, build_eval_cfg
 from yolof_soup.config.experiment_registry import get_run_specs
-from yolof_soup.utils.checkpoint_utils import load_state
 from yolof_soup.utils.eval_utils import compute_coco_map, extract_per_class_ap
 from yolof_soup.utils.inference import InferenceWrapper
-from yolof_soup.utils.logging_utils import setup_logging
+from yolof_soup.utils.global_logger import get_logger
 
-logger = setup_logging(level=logging.INFO, filename="phase2b_quality_audit.log", use_stdout=True)
+logger = get_logger()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Ingredient Audit: Load, Evaluate, Report

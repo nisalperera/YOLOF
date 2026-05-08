@@ -30,7 +30,7 @@ import os
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import numpy as np
 import torch
@@ -40,9 +40,12 @@ from yolof_soup.config.experiment_config import (
     DEVICE,
     EVAL_DATASET,
     RESULTS_DIR,
-    SELECTION_DATASET,
+    # SELECTION_DATASET,
+    PHASE2_OUTPUT_DIR,
     build_eval_cfg,
 )
+from yolof_soup.config.experiment_registry import get_run_specs
+from yolof_soup.utils.inference import InferenceWrapper
 from yolof_soup.utils.checkpoint_utils import load_states, save_checkpoint
 from yolof_soup.utils.eval_utils import build_eval_dataloader, get_map, extract_per_class_ap
 from yolof_soup.utils.key_utils import (
@@ -55,7 +58,11 @@ from yolof_soup.utils.key_utils import (
     merge_subdicts,
     split_decoder_subheads,
 )
-from yolof_soup.utils.logging_utils import setup_logging
+from yolof_soup.utils.state_dict_utils import assign_state_to_model
+from yolof_soup.utils.global_logger import get_logger
+
+
+logger = None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Hyperparameters (can be adjusted)
@@ -69,21 +76,6 @@ USE_HESSIAN_FOR_FISHER: bool = False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Utility: Detectron2 model building & state-dict assignment
-# ─────────────────────────────────────────────────────────────────────────────
-
-def build_model_from_config(cfg) -> torch.nn.Module:
-    """Build a YOLOF model from Detectron2 config (CPU device)."""
-    from detectron2.modeling import build_model
-    return build_model(cfg)
-
-
-def assign_state_to_model(model: torch.nn.Module, state_dict: Dict[str, torch.Tensor]) -> None:
-    """In-place assign state_dict to model."""
-    model.load_state_dict(state_dict, strict=False)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Condition 1 (M1): Global Uniform Averaging
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -94,9 +86,9 @@ def build_condition_1_global_uniform(
     M1 (Condition 1): Uniform averaging over entire model.
     θ_soup = (1/N) Σ θ_i
     """
-    logging.info("Building Condition 1 (M1): Global Uniform Averaging")
+    logger.info("Building Condition 1 (M1): Global Uniform Averaging")
     soup = compute_anchor(ingredient_states)
-    logging.info("  ✓ Global uniform soup built. Size: %.2f MB", _state_dict_size_mb(soup))
+    logger.info("  ✓ Global uniform soup built. Size: %.2f MB", _state_dict_size_mb(soup))
     return soup
 
 
@@ -114,7 +106,7 @@ def build_condition_2_branch_uniform(
     Average cls_head uniformly, reg_head uniformly, shared uniformly.
     Keep backbone+encoder from ingredient 0 (same as input).
     """
-    logging.info("Building Condition 2 (M2): Branch-Uniform Averaging")
+    logger.info("Building Condition 2 (M2): Branch-Uniform Averaging")
     
     # Extract decoder keys from first ingredient
     decoder_keys = get_decoder_keys(ingredient_states[0])
@@ -135,7 +127,7 @@ def build_condition_2_branch_uniform(
     
     # Merge all parts
     soup = merge_subdicts(be_dict, cls_avg, reg_avg, shared_avg)
-    logging.info("  ✓ Branch-uniform soup built. Size: %.2f MB", _state_dict_size_mb(soup))
+    logger.info("  ✓ Branch-uniform soup built. Size: %.2f MB", _state_dict_size_mb(soup))
     return soup
 
 
@@ -145,7 +137,7 @@ def build_condition_2_branch_uniform(
 
 def build_condition_3_dirichlet_cd(
     ingredient_states: List[Dict[str, torch.Tensor]],
-    cfg,
+    cfg: CfgNode,
     selection_dataloader,
 ) -> Dict[str, torch.Tensor]:
     """
@@ -154,7 +146,7 @@ def build_condition_3_dirichlet_cd(
     Use selection split to find best λ values for cls and reg branches.
     Then construct soup with those weights.
     """
-    logging.info("Building Condition 3 (M3): Dirichlet-Sampled Branch Coefficients (CD Search)")
+    logger.info("Building Condition 3 (M3): Dirichlet-Sampled Branch Coefficients (CD Search)")
     
     # Extract decoder keys and sub-head partitions
     decoder_keys = get_decoder_keys(ingredient_states[0])
@@ -178,15 +170,19 @@ def build_condition_3_dirichlet_cd(
     
     # Coordinate descent search for best λ per branch
     best_lam_cls = _coordinate_descent_search(
-        ingredient_states, anchor_cls, cls_taus, cls_keys, be_dict, cfg, 
-        selection_dataloader, "cls"
+        anchor_cls, anchor_reg, anchor_shared,
+        cls_taus, reg_taus, shared_taus,
+        be_dict, cfg, 
+        "cls"
     )
     best_lam_reg = _coordinate_descent_search(
-        ingredient_states, anchor_reg, reg_taus, reg_keys, be_dict, cfg, 
-        selection_dataloader, "reg"
+        anchor_cls, anchor_reg, anchor_shared,
+        cls_taus, reg_taus, shared_taus,
+        be_dict, cfg, 
+        "reg"
     )
     
-    logging.info("  → CD search found: λ_cls=%.3f, λ_reg=%.3f", best_lam_cls, best_lam_reg)
+    logger.info("  → CD search found: λ_cls=%.3f, λ_reg=%.3f", best_lam_cls, best_lam_reg)
     
     # Build final soup with optimal λ values
     cls_merged = apply_uniform_lambdas(anchor_cls, cls_taus, best_lam_cls)
@@ -194,48 +190,67 @@ def build_condition_3_dirichlet_cd(
     shared_merged = apply_uniform_lambdas(anchor_shared, shared_taus, 1.0)  # shared always λ=1.0
     
     soup = merge_subdicts(be_dict, cls_merged, reg_merged, shared_merged)
-    logging.info("  ✓ Dirichlet soup built. Size: %.2f MB", _state_dict_size_mb(soup))
+    logger.info("  ✓ Dirichlet soup built. Size: %.2f MB", _state_dict_size_mb(soup))
     return soup
 
 
 def _coordinate_descent_search(
-    ingredient_states: List[Dict[str, torch.Tensor]],
-    anchor: Dict[str, torch.Tensor],
-    taus: List[Dict[str, torch.Tensor]],
-    subhead_keys: List[str],
+    anchor_cls: Dict[str, torch.Tensor],
+    anchor_reg: Dict[str, torch.Tensor],
+    anchor_shared: Dict[str, torch.Tensor],
+    taus_cls: List[Dict[str, torch.Tensor]],
+    taus_reg: List[Dict[str, torch.Tensor]],
+    taus_shared: List[Dict[str, torch.Tensor]],
     be_dict: Dict[str, torch.Tensor],
     cfg,
-    selection_dataloader,
-    branch_name: str,
+    search_branch: str,  # "cls" or "reg"
 ) -> float:
     """
-    Find best λ via coordinate descent on selection split.
+    Find best λ via coordinate descent.
+    Varies λ for one branch while keeping other branches at λ=1.0
     """
     best_lam = 1.0
-    best_map = 0.0
+    best_map = -1.0  # Start with invalid value
+    nan_count = 0
     
     for lam in CD_LAMBDA_GRID:
-        merged = apply_uniform_lambdas(anchor, taus, lam)
-        full_state = merge_subdicts(be_dict, merged)
+        # Build merged state with all three branches
+        if search_branch == "cls":
+            cls_merged = apply_uniform_lambdas(anchor_cls, taus_cls, lam)
+            reg_merged = apply_uniform_lambdas(anchor_reg, taus_reg, 1.0)
+            shared_merged = apply_uniform_lambdas(anchor_shared, taus_shared, 1.0)
+        elif search_branch == "reg":
+            cls_merged = apply_uniform_lambdas(anchor_cls, taus_cls, 1.0)
+            reg_merged = apply_uniform_lambdas(anchor_reg, taus_reg, lam)
+            shared_merged = apply_uniform_lambdas(anchor_shared, taus_shared, 1.0)
+        else:
+            raise ValueError(f"Unknown branch: {search_branch}")
         
-        # Quick evaluation on selection split
-        model = build_model_from_config(cfg)
+        full_state = merge_subdicts(be_dict, cls_merged, reg_merged, shared_merged)
+        
+        # Evaluate complete model
+        model = InferenceWrapper(cfg)
         assign_state_to_model(model, full_state)
         model = model.to(DEVICE)
         model.eval()
         
         try:
-            map_val = get_map(model, cfg, SELECTION_DATASET, output_dir=Path(RESULTS_DIR) / "cd_search", tag=f"{branch_name}_lam{lam:.2f}")
-            logging.debug("  [CD search %s] λ=%.3f → mAP=%.4f", branch_name, lam, map_val)
+            map_val = get_map(model.model, cfg, EVAL_DATASET, output_dir=Path(RESULTS_DIR) / "cd_search", tag=f"{search_branch}_lam{lam:.2f}")
+            logger.debug("  [CD search %s] λ=%.3f → mAP=%.4f", search_branch, lam, map_val)
             
             if map_val > best_map:
                 best_map = map_val
                 best_lam = lam
         except Exception as e:
-            logging.warning("  [CD search %s] λ=%.3f → evaluation failed: %s", branch_name, lam, str(e))
+            logger.warning("  [CD search %s] λ=%.3f → evaluation failed: %s", search_branch, lam, str(e))
+            nan_count += 1
         finally:
             del model
             torch.cuda.empty_cache()
+    
+    if nan_count == len(CD_LAMBDA_GRID):
+        logger.warning("  [CD search %s] All λ values returned NaN. Defaulting to λ=1.0", search_branch)
+        best_lam = 1.0
     
     return best_lam
 
@@ -253,7 +268,7 @@ def build_condition_4_fisher_weighted(
     Compute Fisher information (or L2 proxy) per ingredient per branch.
     Weight each ingredient inversely by Fisher magnitude.
     """
-    logging.info("Building Condition 4 (M4): Fisher/Hessian-Weighted Branch Coefficients")
+    logger.info("Building Condition 4 (M4): Fisher/Hessian-Weighted Branch Coefficients")
     
     # For now, use L2 norm as proxy for Fisher (deterministic, fast)
     
@@ -272,8 +287,8 @@ def build_condition_4_fisher_weighted(
     reg_weights = _inverse_norm_weights(reg_norms)
     shared_weights = _inverse_norm_weights(shared_norms)
     
-    logging.debug("  Fisher weights: cls=%s", [f"{w:.3f}" for w in cls_weights])
-    logging.debug("  Fisher weights: reg=%s", [f"{w:.3f}" for w in reg_weights])
+    logger.debug("  Fisher weights: cls=%s", [f"{w:.3f}" for w in cls_weights])
+    logger.debug("  Fisher weights: reg=%s", [f"{w:.3f}" for w in reg_weights])
     
     # Weighted merge
     cls_avg = _weighted_average(
@@ -290,7 +305,7 @@ def build_condition_4_fisher_weighted(
     )
     
     soup = merge_subdicts(be_dict, cls_avg, reg_avg, shared_avg)
-    logging.info("  ✓ Fisher-weighted soup built. Size: %.2f MB", _state_dict_size_mb(soup))
+    logger.info("  ✓ Fisher-weighted soup built. Size: %.2f MB", _state_dict_size_mb(soup))
     return soup
 
 
@@ -345,11 +360,18 @@ def evaluate_condition(
             "per_class_ap": [80-element list],
         }
     """
-    logging.info("Evaluating condition %s on eval split...", tag)
+    logger.info("Evaluating condition %s on eval split...", tag)
     
     # Build and load model
-    model = build_model_from_config(cfg)
+    model = InferenceWrapper(cfg)
+    # logger.info(f"State dict keys sample (first 5): {list(state_dict.keys())[:5]}")
+    # logger.info(f"State dict num keys: {len(state_dict)}")
+    # model_state_before = model.model.state_dict()
+    # logger.info(f"Model state dict before assignment (first 5): {list(model_state_before.keys())[:5]}")
+    # logger.info(f"Model state num keys before: {len(model_state_before)}")
+
     assign_state_to_model(model, state_dict)
+    
     model = model.to(DEVICE)
     model.eval()
     
@@ -363,12 +385,12 @@ def evaluate_condition(
         ar100_val = float(results_dict.get("AR-maxDets=100", 0.0))
         
         # Extract per-class AP values
-        per_class_ap = extract_per_class_ap(results_dict, n_classes=80)
+        per_class_ap = extract_per_class_ap(results_dict)
         
-        logging.info("  ✓ Condition %s: mAP50:95=%.4f, mAP50=%.4f, AR@100=%.4f", 
+        logger.info("  ✓ Condition %s: mAP50:95=%.4f, mAP50=%.4f, AR@100=%.4f", 
                    tag, map_val, map50_val, ar100_val)
     except Exception as e:
-        logging.error("  ✗ Evaluation failed for %s: %s", tag, str(e))
+        logger.error("  ✗ Evaluation failed for %s: %s", tag, str(e), exc_info=True)
         map_val = 0.0
         map50_val = 0.0
         ar100_val = 0.0
@@ -410,56 +432,71 @@ def run(verbose: bool = True) -> Dict[str, Any]:
         Dict with results for all 4 conditions + metadata
     """
     
-    setup_logging(level=logging.DEBUG if verbose else logging.INFO, filename="phase3_soup_construction.log", use_stdout=True)
+    global logger
+    logger = get_logger(level=logging.DEBUG if verbose else logging.INFO, add_file_handler=True)
     
-    logging.info("=" * 90)
-    logging.info("PHASE 3: SOUP CONSTRUCTION & EVALUATION")
-    logging.info("=" * 90)
+    logger.info("=" * 90)
+    logger.info("PHASE 3: SOUP CONSTRUCTION & EVALUATION")
+    logger.info("=" * 90)
     
     # Setup directories
     results_dir = Path(RESULTS_DIR)
     results_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir = Path(CHECKPOINT_DIR)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    ingredients_dir = Path(PHASE2_OUTPUT_DIR)
     
     # Load ingredient checkpoints
-    logging.info("\n[1/6] Loading 6 ingredient checkpoints...")
+    logger.info("\n[1/6] Loading 6 ingredient checkpoints...")
+    run_registry = get_run_specs()
+    ingredient_runs = [r for r in run_registry if r.role == "ingredient"]
+
     ingredient_paths = []
-    for _run in os.listdir(CHECKPOINT_DIR):
-        ingredient_paths.append(Path(CHECKPOINT_DIR) / _run / "model_best.pth")
+    # run_ids = []
+    cfg_paths = []
+    for run_spec in ingredient_runs:
+        ckpt_path = Path(ingredients_dir) / f"{run_spec.run_name}/model_best.pth"
+        ingredient_paths.append(ckpt_path)
+        # run_ids.append(run_spec.run_id)
+        cfg_paths.append(Path(ingredients_dir) / f"{run_spec.run_name}/config.yaml")
+        # logger.info("Will audit: %s → %s", run_spec.run_id, ckpt_path)
     
     # Check if paths exist
     missing = [p for p in ingredient_paths if not p.exists()]
     if missing:
-        logging.error("Missing checkpoints: %s", missing)
+        logger.error("Missing checkpoints: %s", missing, exc_info=True)
         raise FileNotFoundError(f"Missing phase 2 checkpoints. Expected at: {ingredient_paths[0].parent}/")
     
     ingredient_states = load_states(ingredient_paths)
-    logging.info("  ✓ Loaded 6 ingredients")
+    logger.info("  ✓ Loaded 6 ingredients")
     
     # Build Detectron2 config
-    logging.info("\n[2/6] Building Detectron2 config...")
+    logger.info("\n[2/6] Building Detectron2 config...")
+    # cfgs = [build_eval_cfg(EVAL_DATASET, str(cfg_path), ckpt_file) for cfg_path, ckpt_file in zip(cfg_paths, ingredient_paths)]
     cfg = build_eval_cfg()
-    logging.info("  ✓ Config ready")
+    logger.info("  ✓ Config ready")
     
     # Build dataloaders
-    logging.info("\n[3/6] Building dataloaders...")
+    logger.info("\n[3/6] Building dataloaders...")
     eval_dataloader = build_eval_dataloader(cfg, EVAL_DATASET)
-    selection_dataloader = build_eval_dataloader(cfg, SELECTION_DATASET)
-    logging.info("  ✓ Dataloaders ready")
+    selection_dataloader = build_eval_dataloader(cfg, EVAL_DATASET)
+    logger.info("  ✓ Dataloaders ready")
     
     # Build all 4 conditions
-    logging.info("\n[4/6] Building 4 soup conditions...")
+    logger.info("\n[4/6] Building 4 soup conditions...")
     condition_1_state = build_condition_1_global_uniform(ingredient_states)
+    results_cond1 = evaluate_condition(condition_1_state, cfg, "condition_1")
     condition_2_state = build_condition_2_branch_uniform(ingredient_states)
+    results_cond2 = evaluate_condition(condition_2_state, cfg, "condition_2")
     condition_3_state = build_condition_3_dirichlet_cd(
         ingredient_states, cfg, selection_dataloader
     )
     condition_4_state = build_condition_4_fisher_weighted(ingredient_states)
-    logging.info("  ✓ All 4 conditions built")
+    logger.info("  ✓ All 4 conditions built")
     
     # Evaluate all 4 conditions
-    logging.info("\n[5/6] Evaluating all 4 conditions on eval split...")
+    logger.info("\n[5/6] Evaluating all 4 conditions on eval split...")
     results_cond1 = evaluate_condition(condition_1_state, cfg, "condition_1")
     results_cond2 = evaluate_condition(condition_2_state, cfg, "condition_2")
     results_cond3 = evaluate_condition(condition_3_state, cfg, "condition_3")
@@ -467,7 +504,7 @@ def run(verbose: bool = True) -> Dict[str, Any]:
     
     # Also evaluate best individual (ingredient 0 as reference)
     results_best_individual = evaluate_condition(ingredient_states[0], cfg, "best_individual")
-    logging.info("  ✓ All evaluations complete")
+    logger.info("  ✓ All evaluations complete")
     
     # Determine best learned condition
     map_3 = results_cond3["map50_95"]
@@ -476,13 +513,13 @@ def run(verbose: bool = True) -> Dict[str, Any]:
     best_learned_state = condition_3_state if best_learned_is_cond3 else condition_4_state
     best_learned_tag = "condition_3" if best_learned_is_cond3 else "condition_4"
     
-    logging.info("\nBest learned condition:")
-    logging.info("  → Condition 3 (Dirichlet): mAP50:95=%.4f", map_3)
-    logging.info("  → Condition 4 (Fisher):    mAP50:95=%.4f", map_4)
-    logging.info("  → Best: %s (mAP50:95=%.4f)", best_learned_tag, max(map_3, map_4))
+    logger.info("\nBest learned condition:")
+    logger.info("  → Condition 3 (Dirichlet): mAP50:95=%.4f", map_3)
+    logger.info("  → Condition 4 (Fisher):    mAP50:95=%.4f", map_4)
+    logger.info("  → Best: %s (mAP50:95=%.4f)", best_learned_tag, max(map_3, map_4))
     
     # Save checkpoints
-    logging.info("\n[6/6] Saving checkpoints...")
+    logger.info("\n[6/6] Saving checkpoints...")
     branch_uniform_path = checkpoint_dir / "branch_uniform_soup.pth"
     best_learned_path = checkpoint_dir / "best_learned_soup.pth"
     global_uniform_path = checkpoint_dir / "global_uniform_soup.pth"
@@ -502,10 +539,10 @@ def run(verbose: bool = True) -> Dict[str, Any]:
         condition_1_state,
         metadata={"condition": 1, "method": "global_uniform", "map50_95": results_cond1["map50_95"]},
     )
-    logging.info("  ✓ Checkpoints saved")
+    logger.info("  ✓ Checkpoints saved")
     
     # Compile and save results JSON
-    logging.info("\nSaving results JSON...")
+    logger.info("\nSaving results JSON...")
     results = {
         "condition_1": results_cond1,
         "condition_2": results_cond2,
@@ -522,17 +559,17 @@ def run(verbose: bool = True) -> Dict[str, Any]:
     results_json_path = results_dir / "phase3_soup_results.json"
     with open(results_json_path, "w") as f:
         json.dump(results, f, indent=2)
-    logging.info("  → Results: %s", results_json_path)
+    logger.info("  → Results: %s", results_json_path)
     
-    logging.info("\n" + "=" * 90)
-    logging.info("PHASE 3 COMPLETE")
-    logging.info("=" * 90)
-    logging.info("Outputs:")
-    logging.info("  • Global-uniform soup:   %s", global_uniform_path)
-    logging.info("  • Branch-uniform soup:   %s", branch_uniform_path)
-    logging.info("  • Best learned soup:     %s", best_learned_path)
-    logging.info("  • Results JSON:          %s", results_json_path)
-    logging.info("=" * 90)
+    logger.info("\n" + "=" * 90)
+    logger.info("PHASE 3 COMPLETE")
+    logger.info("=" * 90)
+    logger.info("Outputs:")
+    logger.info("  • Global-uniform soup:   %s", global_uniform_path)
+    logger.info("  • Branch-uniform soup:   %s", branch_uniform_path)
+    logger.info("  • Best learned soup:     %s", best_learned_path)
+    logger.info("  • Results JSON:          %s", results_json_path)
+    logger.info("=" * 90)
     
     return results
 
@@ -544,4 +581,5 @@ if __name__ == "__main__":
     args.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parsed_args = args.parse_args()
 
-    run(verbose=parsed_args.verbose)
+    # run(verbose=parsed_args.verbose)
+    run(verbose=True)

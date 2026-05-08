@@ -13,9 +13,6 @@ from .augmentation_impl import (
     ColorJitter,
     DetectionAutoAugment,
 )
-from yolof_soup.utils.logging_utils import setup_logging
-
-logger = setup_logging(logging.INFO, filename="data/detection_utils.log", use_stdout=True)
 
 # Multi-scale short-side sizes used by various groups
 _WIDE_MULTI_SCALE = (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800)

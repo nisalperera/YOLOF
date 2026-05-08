@@ -39,9 +39,9 @@ except ImportError:
     _D2_AVAILABLE = False
 
 from yolof.config import get_cfg
-from yolof_soup.utils.logging_utils import setup_logging
+from yolof_soup.utils.global_logger import get_logger
 
-logger = setup_logging(logging.INFO, filename="config/experiment_config.log", use_stdout=True)
+logger = get_logger()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -298,9 +298,10 @@ def _base_yolof_cfg(weights_path: str = PRETRAINED_WEIGHTS):
     cfg.DATALOADER.NUM_WORKERS = int(os.environ.get("THESIS_NUM_WORKERS", "4"))
 
     # ── Pretrained weights ────────────────────────────────────────────────────
-    if os.path.isfile(weights_path):
+    if weights_path is not None and os.path.isfile(weights_path):
         cfg.MODEL.WEIGHTS = str(weights_path)
     else:
+        cfg.MODEL.WEIGHTS = ""  # Empty string tells Detectron2 to train from scratch
         logger.warning(
             "Pretrained weights not found at %s — "
             "training will start from scratch.", weights_path
@@ -311,7 +312,7 @@ def _base_yolof_cfg(weights_path: str = PRETRAINED_WEIGHTS):
 
 # ── Evaluation / inference config ─────────────────────────────────────────────
 
-def build_eval_cfg(dataset: str = EVAL_DATASET, cfg_file: str | Path = None, weights_path: str | Path = None):
+def build_eval_cfg(dataset: str = EVAL_DATASET, cfg_file: str | Path = YOLOF_BASE_YAML, weights_path: str | Path = None):
     """
     Lightweight CfgNode for inference-only passes (soup evaluation,
     loss landscape measurement, cross-domain evaluation).
@@ -322,7 +323,7 @@ def build_eval_cfg(dataset: str = EVAL_DATASET, cfg_file: str | Path = None, wei
         Detectron2 dataset name — one of SELECTION_DATASET, EVAL_DATASET,
         VOC_DATASET, or TRAIN_DATASET.
     """
-    cfg = _base_yolof_cfg(weights_path=weights_path if weights_path else PRETRAINED_WEIGHTS)
+    cfg = _base_yolof_cfg(weights_path=weights_path)
 
     if cfg_file:
         if os.path.isfile(cfg_file):

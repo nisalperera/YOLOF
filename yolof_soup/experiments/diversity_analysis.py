@@ -34,7 +34,7 @@ from yolof_soup.utils import (
     get_map,
     compare_diversity_gain,
 )
-from yolof_soup.utils.logging_utils import setup_logging
+from yolof_soup.utils.global_logger import configure_logger
 
 
 def build_model_with_state(full_state: dict, device):
@@ -80,11 +80,11 @@ def global_uniform_soup_map(states: list, device) -> float:
 
 def main():
 
-    setup_logging(level=logging.INFO, filename="rq3_diversity_analysis.log", use_stdout=True)
+    logger = configure_logger(level=logging.INFO, add_file_handler=True, log_file="rq3_diversity_analysis.log")
 
-    logging.info("=" * 60)
-    logging.info("RQ3: Diversity vs. Soup Performance")
-    logging.info("=" * 60)
+    logger.info("=" * 60)
+    logger.info("RQ3: Diversity vs. Soup Performance")
+    logger.info("=" * 60)
 
     backbone_enc_state = load_state(BACKBONE_ENC_CKPT)
     decoder_states     = load_states(DECODER_CKPT_PATHS)

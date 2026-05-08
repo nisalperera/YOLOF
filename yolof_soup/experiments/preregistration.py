@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from yolof_soup.utils.logging_utils import setup_logging
+from yolof_soup.utils.global_logger import configure_logger
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pre-registration: Lock Best Learned Soup Before Phase 5
@@ -203,7 +203,7 @@ def main():
     )
     args = parser.parse_args()
 
-    setup_logging(level=logging.DEBUG if args.verbose else logging.INFO, filename="phase4b_preregistration.log", use_stdout=True)
+    logger = configure_logger(level=logging.DEBUG if args.verbose else logging.INFO, add_file_handler=True, log_file="phase4b_preregistration.log")
 
     # Pre-register
     preregistration = preregister_best_learned_soup(args.soup_results_json)
@@ -211,13 +211,13 @@ def main():
     # Save
     json_path, txt_path = save_preregistration(preregistration, args.output_dir)
 
-    logging.info("="*80)
-    logging.info("PRE-REGISTRATION COMPLETE")
-    logging.info("="*80)
-    logging.info("Files saved:")
-    logging.info("  JSON: %s", json_path)
-    logging.info("  TXT:  %s", txt_path)
-    logging.info("Next step: Use chosen checkpoint for D2 and C3 in Phase 5")
+    logger.info("="*80)
+    logger.info("PRE-REGISTRATION COMPLETE")
+    logger.info("="*80)
+    logger.info("Files saved:")
+    logger.info("  JSON: %s", json_path)
+    logger.info("  TXT:  %s", txt_path)
+    logger.info("Next step: Use chosen checkpoint for D2 and C3 in Phase 5")
 
     return preregistration
 

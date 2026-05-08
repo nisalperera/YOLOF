@@ -40,9 +40,9 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from yolof_soup.utils.logging_utils import setup_logging
+from yolof_soup.utils.global_logger import get_logger, configure_logger
 
-logger = setup_logging(logging.INFO, filename="run_phases_2b_to_7.log", use_stdout=True)
+logger = get_logger()
 
 
 def run_phase_2b(

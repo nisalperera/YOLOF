@@ -19,9 +19,9 @@ import torch
 
 from yolof.analysis.mode_connectivity import load_checkpoint_state_dict
 from yolof.analysis.model_soup import save_soup
-from yolof_soup.utils.logging_utils import setup_logging
+from yolof_soup.utils.global_logger import get_logger
 
-logger = setup_logging(level=logging.INFO, filename="checkpoint_utils.log", use_stdout=True)
+logger = get_logger()
 
 
 # ── Loading ───────────────────────────────────────────────

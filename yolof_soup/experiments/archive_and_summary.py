@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from yolof_soup.utils.logging_utils import setup_logging
+from yolof_soup.utils.global_logger import configure_logger
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -327,7 +327,7 @@ def main():
     args = parser.parse_args()
 
 
-    setup_logging(level=logging.DEBUG if args.verbose else logging.INFO, filename="archive_and_summary.log", use_stdout=True)
+    logger = configure_logger(level=logging.DEBUG if args.verbose else logging.INFO, add_file_handler=True, log_file="archive_and_summary.log")
 
     # Load audit report if provided
     audit_report = None
@@ -336,7 +336,7 @@ def main():
             with open(args.audit_report) as f:
                 audit_report = json.load(f)
         except Exception as e:
-            logging.warning("Could not load audit report: %s", e)
+            logger.warning("Could not load audit report: %s", e)
 
     # Build summary
     summary = build_experiment_summary(

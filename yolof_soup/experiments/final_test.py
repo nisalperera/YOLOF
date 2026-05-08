@@ -13,16 +13,16 @@ import logging
 
 from yolof_soup.config.experiment_config import RESULTS_DIR
 from yolof_soup.utils import wilcoxon_one_tailed, cohens_d
-from yolof_soup.utils.logging_utils import setup_logging
+from yolof_soup.utils.global_logger import get_logger, configure_logger
 
 
 def main():
 
-    setup_logging(level=logging.INFO, filename="rq1_final_test.log", use_stdout=True)
+    logger = configure_logger(level=logging.INFO, add_file_handler=True, log_file="rq1_final_test.log")
 
-    logging.info("=" * 60)
-    logging.info("RQ1 / H1: Statistical Test")
-    logging.info("=" * 60)
+    logger.info("=" * 60)
+    logger.info("RQ1 / H1: Statistical Test")
+    logger.info("=" * 60)
 
     with open(f"{RESULTS_DIR}/phase3_soup_results.json") as f:
         p3 = json.load(f)

@@ -37,25 +37,26 @@ import numpy as np
 import torch
 
 from yolof_soup.config.experiment_config import (
-    CHECKPOINT_DIR,
     PHASE2_OUTPUT_DIR,
     DEVICE,
     EVAL_DATASET,
     RESULTS_DIR,
     build_eval_cfg,
 )
+from yolof_soup.config.experiment_registry import get_run_specs
 from yolof_soup.utils.checkpoint_utils import load_states
 from yolof_soup.utils.eval_utils import get_map, build_eval_dataloader
 from yolof_soup.utils.key_utils import (
     extract_subdict,
     get_backbone_encoder_keys,
     get_decoder_keys,
-    merge_subdicts,
     split_decoder_subheads,
 )
-from yolof_soup.utils.logging_utils import setup_logging
+from yolof_soup.utils.inference import InferenceWrapper
+from yolof_soup.utils.state_dict_utils import assign_state_to_model
+from yolof_soup.utils.global_logger import get_logger
 
-logger = setup_logging(level=logging.INFO, filename="phase4_loss_landscape.log", use_stdout=True)
+logger = None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Hyperparameters
@@ -69,19 +70,8 @@ HESSIAN_SAMPLES: int = 50
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Utility: Model building & loss computation
+# Utility: Loss computation
 # ─────────────────────────────────────────────────────────────────────────────
-
-def build_model_from_config(cfg) -> torch.nn.Module:
-    """Build a YOLOF model from Detectron2 config (CPU device)."""
-    from detectron2.modeling import build_model
-    return build_model(cfg)
-
-
-def assign_state_to_model(model: torch.nn.Module, state_dict: Dict[str, torch.Tensor]) -> None:
-    """In-place assign state_dict to model."""
-    model.load_state_dict(state_dict, strict=False)
-
 
 def compute_model_loss(
     model: torch.nn.Module,
@@ -135,7 +125,7 @@ def compute_lmc_barrier(
         state_interp = interpolate_state(state_a, state_b, float(alpha))
         
         # Build model and compute loss
-        model = build_model_from_config(cfg)
+        model = InferenceWrapper(cfg)
         assign_state_to_model(model, state_interp)
         model = model.to(DEVICE)
         model.eval()
@@ -145,7 +135,7 @@ def compute_lmc_barrier(
             losses.append(loss_val)
             logger.debug("  [LMC] α=%.2f → loss=%.5f", alpha, loss_val)
         except Exception as e:
-            logger.warning("  [LMC] α=%.2f → loss computation failed: %s", alpha, str(e))
+            logger.warning("  [LMC] α=%.2f → loss computation failed: %s", alpha, str(e), exc_info=True)
             losses.append(float("nan"))
         
         del model
@@ -258,10 +248,10 @@ def _l2_norm_squared(state_dict: Dict[str, torch.Tensor]) -> float:
 
 
 def _compute_hessian_trace_hutchinson(
-    state_dict: Dict[str, torch.Tensor],
     model: torch.nn.Module,
     dataloader,
     device: torch.device,
+    param_keys: Optional[List[str]] = None,
     n_samples: int = HESSIAN_SAMPLES,
 ) -> float:
     """
@@ -270,10 +260,10 @@ def _compute_hessian_trace_hutchinson(
     Tr(H) ≈ E[z^T H z] where z ~ Rademacher {-1, +1}
     
     Args:
-        state_dict: Model parameters
-        model: YOLOF model
+        model: YOLOF model (with full state already loaded)
         dataloader: Evaluation dataloader
         device: Compute device
+        param_keys: Optional list of parameter names to filter. If None, uses all model parameters.
         n_samples: Number of Rademacher samples
     
     Returns:
@@ -281,14 +271,30 @@ def _compute_hessian_trace_hutchinson(
     """
     trace_estimate = 0.0
     
+    # Collect parameters (optionally filtered by keys)
+    if param_keys is not None:
+        # Build mapping of parameter names to parameters
+        param_dict = {name: param for name, param in model.named_parameters()}
+        params = [param_dict[key] for key in param_keys if key in param_dict]
+        if not params:
+            logger.warning("    No parameters found for keys: %s", param_keys[:3])
+            return 0.0
+    else:
+        # Only include trainable parameters
+        params = [p for p in model.parameters() if p.numel() > 0]
+    
+    if not params:
+        logger.warning("    No trainable parameters found")
+        return 0.0
+
     try:
-        # Assign state to model
-        assign_state_to_model(model, state_dict)
         model = model.to(device)
         model.eval()
         
-        # Collect all parameters for Hessian computation
-        params = list(model.parameters())
+        # CRITICAL: Enable gradients for all parameters
+        for p in params:
+            p.requires_grad_(True)
+        
         param_sizes = [p.numel() for p in params]
         total_params = sum(param_sizes)
         
@@ -303,30 +309,30 @@ def _compute_hessian_trace_hutchinson(
             model.zero_grad()
             
             # Get a batch and compute loss
+            grads = None
             try:
                 batch = next(iter(dataloader))
-                if isinstance(batch, (list, tuple)):
-                    images, targets = batch[0], batch[1]
-                else:
-                    images = batch
-                    targets = None
                 
-                if hasattr(images, "to"):
-                    images = images.to(device)
-                if targets is not None and hasattr(targets, "to"):
-                    targets = targets.to(device)
+                outputs = model(batch, require_grad=True)
+                loss = None
+                for out in outputs:
+                    losses = out.get("losses", {})
+                    loss = losses["loss_cls"] + losses.get("loss_box_reg", 0)
                 
-                # Forward pass
-                outputs = model(images, targets) if targets is not None else model(images)
-                if isinstance(outputs, dict) and "loss_classifier" in outputs:
-                    loss = outputs["loss_classifier"] + outputs.get("loss_box_reg", 0)
-                else:
-                    loss = outputs if isinstance(outputs, torch.Tensor) else 0.0
-                
-                if loss == 0.0:
+                if loss is None or (isinstance(loss, float) and loss == 0.0):
                     logger.debug("    Sample %d: No loss computed", sample_idx)
                     continue
                 
+                # Ensure loss is a scalar tensor
+                if not isinstance(loss, torch.Tensor):
+                    logger.debug("    Sample %d: Loss is not a tensor", sample_idx)
+                    continue
+                    
+                    # # Ensure loss requires grad
+                    # if not loss.requires_grad:
+                    #     logger.debug("    Sample %d: Loss does not require grad", sample_idx)
+                    #     continue
+                    
                 # Compute gradient
                 grads = torch.autograd.grad(
                     loss, params, create_graph=True, retain_graph=True, allow_unused=True
@@ -354,7 +360,7 @@ def _compute_hessian_trace_hutchinson(
                 logger.debug("    Sample %d: DataLoader exhausted", sample_idx)
                 break
             except Exception as e:
-                logger.debug("    Sample %d: Hessian computation failed: %s", sample_idx, str(e))
+                logger.debug("    Sample %d: Hessian computation failed: %s", sample_idx, str(e), exc_info=True)
                 continue
             finally:
                 del z_list, grads
@@ -365,9 +371,12 @@ def _compute_hessian_trace_hutchinson(
         logger.debug("    Estimated trace (Hutchinson): %.6f", trace_estimate)
         
     except Exception as e:
-        logger.warning("    Hutchinson trace estimation failed: %s", e)
-        # Fallback to L2-norm
-        trace_estimate = _l2_norm_squared(state_dict)
+        logger.warning("    Hutchinson trace estimation failed: %s", e, exc_info=True)
+        # Fallback to L2-norm of parameters
+        total_norm = 0.0
+        for param in params:
+            total_norm += (param.data ** 2).sum().item()
+        trace_estimate = total_norm
         logger.warning("    Falling back to L2-norm proxy: %.6f", trace_estimate)
     finally:
         model.zero_grad()
@@ -377,7 +386,7 @@ def _compute_hessian_trace_hutchinson(
 
 def compute_hessian_traces(
     ingredient_states: List[Dict[str, torch.Tensor]],
-    cfg,
+    cfgs: List[CfgNode],
     dataloader,
 ) -> Dict[str, Dict[str, float]]:
     """
@@ -410,37 +419,34 @@ def compute_hessian_traces(
     results = {}
     
     for idx, state in enumerate(ingredient_states):
-        logger.info("  [%d/6] Ingredient %d", idx + 1, idx)
-        
-        # Extract subcomponents
-        be_sub = extract_subdict(state, be_keys)
-        cls_sub = extract_subdict(state, cls_keys)
-        reg_sub = extract_subdict(state, reg_keys)
-        shared_sub = extract_subdict(state, shared_keys)
+        logger.info("  [%d/6] Ingredient %d", idx + 1, idx + 1)
         
         if use_full_hessian:
-            # Compute full Hessian traces using Hutchinson estimator
+            # Load FULL model once per ingredient
+            model = InferenceWrapper(cfgs[idx])
+            assign_state_to_model(model, state)
+            
+            # Compute Hessian traces for each component using filtered parameters
             logger.debug("    Computing backbone_encoder Hessian trace...")
-            model = build_model_from_config(cfg)
-            trace_be = _compute_hessian_trace_hutchinson(be_sub, model, dataloader, DEVICE)
-            del model
+            trace_be = _compute_hessian_trace_hutchinson(model, dataloader, DEVICE, param_keys=be_keys)
             
             logger.debug("    Computing cls_head Hessian trace...")
-            model = build_model_from_config(cfg)
-            trace_cls = _compute_hessian_trace_hutchinson(cls_sub, model, dataloader, DEVICE)
-            del model
+            trace_cls = _compute_hessian_trace_hutchinson(model, dataloader, DEVICE, param_keys=cls_keys)
             
             logger.debug("    Computing reg_head Hessian trace...")
-            model = build_model_from_config(cfg)
-            trace_reg = _compute_hessian_trace_hutchinson(reg_sub, model, dataloader, DEVICE)
-            del model
+            trace_reg = _compute_hessian_trace_hutchinson(model, dataloader, DEVICE, param_keys=reg_keys)
             
             logger.debug("    Computing shared Hessian trace...")
-            model = build_model_from_config(cfg)
-            trace_shared = _compute_hessian_trace_hutchinson(shared_sub, model, dataloader, DEVICE)
+            trace_shared = _compute_hessian_trace_hutchinson(model, dataloader, DEVICE, param_keys=shared_keys)
+            
             del model
         else:
             # Use L2-norm proxy for fast computation
+            be_sub = extract_subdict(state, be_keys)
+            cls_sub = extract_subdict(state, cls_keys)
+            reg_sub = extract_subdict(state, reg_keys)
+            shared_sub = extract_subdict(state, shared_keys)
+            
             trace_be = _l2_norm_squared(be_sub)
             trace_cls = _l2_norm_squared(cls_sub)
             trace_reg = _l2_norm_squared(reg_sub)
@@ -493,68 +499,71 @@ def run_statistical_tests(
     components = ["backbone_encoder", "cls_head", "reg_head", "shared"]
     pair_ids = list(lmc_barriers.keys())
     
-    barrier_data = {}
-    for comp in components:
-        barrier_data[comp] = [lmc_barriers[pair].get(comp, np.nan) for pair in pair_ids]
-    
     # Test 1: RM-ANOVA on barriers
     logger.info("  Test 1: RM-ANOVA on barriers...")
-    barrier_values = np.array([barrier_data[c] for c in components]).T  # (15 pairs, 4 components)
     
-    # Prepare data for RM-ANOVA
-    df_barrier = pd.DataFrame(
-        barrier_values,
-        columns=components,
-        index=[f"pair_{i}" for i in range(len(pair_ids))]
-    )
+    # Reshape to long format: (subject, component, value)
+    barrier_long_data = []
+    for pair_idx, pair_id in enumerate(pair_ids):
+        for comp in components:
+            barrier_long_data.append({
+                "subject": pair_idx,
+                "component": comp,
+                "barrier": lmc_barriers[pair_id].get(comp, np.nan)
+            })
+    
+    df_barrier_long = pd.DataFrame(barrier_long_data)
     
     try:
-        anova_barrier = AnovaRM(df_barrier, depvar=components[0], subject=df_barrier.index, within=components)
+        anova_barrier = AnovaRM(df_barrier_long, depvar="barrier", subject="subject", within=["component"])
         res_barrier = anova_barrier.fit()
         
         test1_result = {
             "test_name": "RM-ANOVA: Component barriers",
             "n_pairs": len(pair_ids),
             "components": components,
-            "f_statistic": float(res_barrier.anova.loc["C", "F"]) if "F" in res_barrier.anova.columns else None,
-            "p_value": float(res_barrier.anova.loc["C", "PR(>F)"]) if "PR(>F)" in res_barrier.anova.columns else None,
+            "f_statistic": float(res_barrier.anova_table.loc["component", "F"]) if "F" in res_barrier.anova_table.columns else None,
+            "p_value": float(res_barrier.anova_table.loc["component", "PR(>F)"]) if "PR(>F)" in res_barrier.anova_table.columns else None,
             "summary": str(res_barrier),
-            "interpretation": "Significant component differences" if float(res_barrier.anova.loc["C", "PR(>F)"]) < 0.05 else "No significant differences"
         }
+        if test1_result["p_value"] is not None:
+            test1_result["interpretation"] = "Significant component differences" if test1_result["p_value"] < 0.05 else "No significant differences"
     except Exception as e:
-        logger.warning("  ✗ RM-ANOVA failed: %s", e)
+        logger.warning("  ✗ RM-ANOVA failed: %s", e, exc_info=True)
         test1_result = {"status": "error", "error": str(e)}
     
     # Test 3: RM-ANOVA on Hessian traces
     logger.info("  Test 3: RM-ANOVA on Hessian traces...")
     ingredient_ids = list(hessian_traces.keys())
-    hessian_data = {}
-    for comp in components:
-        hessian_data[comp] = [hessian_traces[ing].get(comp, np.nan) for ing in ingredient_ids]
     
-    hessian_values = np.array([hessian_data[c] for c in components]).T  # (6 ingredients, 4 components)
+    # Reshape to long format: (subject, component, value)
+    hessian_long_data = []
+    for ing_idx, ing_id in enumerate(ingredient_ids):
+        for comp in components:
+            hessian_long_data.append({
+                "subject": ing_idx,
+                "component": comp,
+                "trace": hessian_traces[ing_id].get(comp, np.nan)
+            })
     
-    df_hessian = pd.DataFrame(
-        hessian_values,
-        columns=components,
-        index=[f"ing_{i}" for i in range(len(ingredient_ids))]
-    )
+    df_hessian_long = pd.DataFrame(hessian_long_data)
     
     try:
-        anova_hessian = AnovaRM(df_hessian, depvar=components[0], subject=df_hessian.index, within=components)
+        anova_hessian = AnovaRM(df_hessian_long, depvar="trace", subject="subject", within=["component"])
         res_hessian = anova_hessian.fit()
         
         test3_result = {
             "test_name": "RM-ANOVA: Component Hessian traces",
             "n_ingredients": len(ingredient_ids),
             "components": components,
-            "f_statistic": float(res_hessian.anova.loc["C", "F"]) if "F" in res_hessian.anova.columns else None,
-            "p_value": float(res_hessian.anova.loc["C", "PR(>F)"]) if "PR(>F)" in res_hessian.anova.columns else None,
+            "f_statistic": float(res_hessian.anova_table.loc["component", "F"]) if "F" in res_hessian.anova_table.columns else None,
+            "p_value": float(res_hessian.anova_table.loc["component", "PR(>F)"]) if "PR(>F)" in res_hessian.anova_table.columns else None,
             "summary": str(res_hessian),
-            "interpretation": "Significant component differences" if float(res_hessian.anova.loc["C", "PR(>F)"]) < 0.05 else "No significant differences"
         }
+        if test3_result["p_value"] is not None:
+            test3_result["interpretation"] = "Significant component differences" if test3_result["p_value"] < 0.05 else "No significant differences"
     except Exception as e:
-        logger.warning("  ✗ Hessian RM-ANOVA failed: %s", e)
+        logger.warning("  ✗ Hessian RM-ANOVA failed: %s", e, exc_info=True)
         test3_result = {"status": "error", "error": str(e)}
     
     # Test 2: Pearson correlations (placeholder - requires Phase 3 gains)
@@ -589,86 +598,114 @@ def run(verbose: bool = True) -> Dict[str, Any]:
         Dict with all barrier, trace, and test results
     """
     
-    
-    logger.info("=" * 90)
-    logger.info("PHASE 4: LOSS LANDSCAPE ANALYSIS")
-    logger.info("=" * 90)
-    
-    # Setup directories
-    results_dir = Path(RESULTS_DIR)
-    results_dir.mkdir(parents=True, exist_ok=True)
-    ingredients_dir = Path(PHASE2_OUTPUT_DIR)
-    
-    # Load ingredient checkpoints
-    logger.info("\n[1/4] Loading 6 ingredient checkpoints...")
-    ingredient_paths = [
-        ingredients_dir / ingredient / "model_best.pth"
-        for ingredient in os.listdir(ingredients_dir)
-    ]
-    
-    missing = [p for p in ingredient_paths if not p.exists()]
-    if missing:
-        logger.error("Missing checkpoints: %s", missing)
-        raise FileNotFoundError(f"Missing phase 2 checkpoints")
-    
-    ingredient_states = load_states(ingredient_paths)
-    logger.info("  ✓ Loaded 6 ingredients")
-    
-    # Build Detectron2 config
-    logger.info("\n[2/4] Building Detectron2 config...")
-    cfg = build_eval_cfg()
-    logger.info("  ✓ Config ready")
-    
-    # Build evaluation dataloader
-    logger.info("\n[3/4] Building evaluation dataloader...")
-    dataloader = build_eval_dataloader(cfg, EVAL_DATASET)
-    logger.info("  ✓ Dataloader ready")
-    
-    # Compute pairwise LMC barriers
-    logger.info("\n[4/4a] Computing pairwise LMC barriers (15 pairs)...")
-    lmc_barriers = compute_pairwise_lmc_barriers(ingredient_states, cfg, dataloader)
-    
-    # Compute Hessian traces
-    logger.info("\n[4/4b] Computing Hessian traces for 6 ingredients...")
-    hessian_traces = compute_hessian_traces(ingredient_states, cfg, dataloader)
-    
-    # Run statistical tests
-    logger.info("\n[4/4c] Running statistical tests...")
-    test_results = run_statistical_tests(lmc_barriers, hessian_traces)
-    
-    # Save results
-    logger.info("\nSaving results...")
-    
-    barriers_json = results_dir / "phase4_lmc_barriers.json"
-    with open(barriers_json, "w") as f:
-        json.dump(lmc_barriers, f, indent=2)
-    logger.info("  → Barriers: %s", barriers_json)
-    
-    traces_json = results_dir / "phase4_hessian_traces.json"
-    with open(traces_json, "w") as f:
-        json.dump(hessian_traces, f, indent=2)
-    logger.info("  → Traces: %s", traces_json)
-    
-    tests_json = results_dir / "phase4_statistical_tests.json"
-    with open(tests_json, "w") as f:
-        json.dump(test_results, f, indent=2, default=str)
-    logger.info("  → Tests: %s", tests_json)
-    
-    logger.info("\n" + "=" * 90)
-    logger.info("PHASE 4 COMPLETE")
-    logger.info("=" * 90)
-    logger.info("Outputs:")
-    logger.info("  • LMC barriers:      %s", barriers_json)
-    logger.info("  • Hessian traces:    %s", traces_json)
-    logger.info("  • Statistical tests: %s", tests_json)
-    logger.info("=" * 90)
-    
-    return {
-        "lmc_barriers": lmc_barriers,
-        "hessian_traces": hessian_traces,
-        "statistical_tests": test_results,
-    }
+    global logger
+    if logger is None:
+        logger = get_logger(
+            level=logging.DEBUG if verbose else logging.INFO,
+            add_file_handler=True
+        )
+    try:
+        logger.info("=" * 90)
+        logger.info("PHASE 4: LOSS LANDSCAPE ANALYSIS")
+        logger.info("=" * 90)
+        
+        # Setup directories
+        results_dir = Path(RESULTS_DIR)
+        results_dir.mkdir(parents=True, exist_ok=True)
+        ingredients_dir = Path(PHASE2_OUTPUT_DIR)
+
+        run_registry = get_run_specs()
+        ingredient_runs = [r for r in run_registry if r.role == "ingredient"]
+
+        ingredient_paths = []
+        run_ids = []
+        cfg_paths = []
+        for run_spec in ingredient_runs:
+            ckpt_path = Path(ingredients_dir) / f"{run_spec.run_name}/model_best.pth"
+            ingredient_paths.append(ckpt_path)
+            run_ids.append(run_spec.run_id)
+            cfg_paths.append(Path(ingredients_dir) / f"{run_spec.run_name}/config.yaml")
+            logger.info("Will audit: %s → %s", run_spec.run_id, ckpt_path)
+            
+        # Load ingredient checkpoints
+        logger.info("\n[1/4] Loading 6 ingredient checkpoints...")
+
+        missing = [p for p in ingredient_paths if not p.exists()]
+        if missing:
+            logger.error("Missing checkpoints: %s", missing)
+            raise FileNotFoundError(f"Missing phase 2 checkpoints")
+        
+        ingredient_states = load_states(ingredient_paths)
+        logger.info("  ✓ Loaded 6 ingredients")
+        
+        # Build Detectron2 config
+        logger.info("\n[2/4] Building Detectron2 config...")
+        cfgs = [build_eval_cfg(EVAL_DATASET, str(cfg_path), ckpt_file) for cfg_path, ckpt_file in zip(cfg_paths, ingredient_paths)]
+        logger.info("  ✓ Config ready")
+        
+        # Build evaluation dataloader
+        logger.info("\n[3/4] Building evaluation dataloader...")
+        dataloader = build_eval_dataloader(cfgs[0], EVAL_DATASET)
+        logger.info("  ✓ Dataloader ready")
+        
+        # Compute pairwise LMC barriers
+        logger.info("\n[4/4a] Computing pairwise LMC barriers (15 pairs)...")
+        # lmc_barriers = compute_pairwise_lmc_barriers(ingredient_states, cfg, dataloader)
+        barriers_json = results_dir / "phase4_lmc_barriers.json"
+        with open(barriers_json, "r") as f:
+            lmc_barriers = json.load(f)
+        
+        # Compute Hessian traces
+        logger.info("\n[4/4b] Computing Hessian traces for 6 ingredients...")
+        hessian_traces = compute_hessian_traces(ingredient_states, cfgs, dataloader)
+        
+        # Run statistical tests
+        logger.info("\n[4/4c] Running statistical tests...")
+        test_results = run_statistical_tests(lmc_barriers, hessian_traces)
+        
+        # Save results
+        logger.info("\nSaving results...")
+        
+        barriers_json = results_dir / "phase4_lmc_barriers.json"
+        # with open(barriers_json, "w") as f:
+        #     json.dump(lmc_barriers, f, indent=2)
+        logger.info("  → Barriers: %s", barriers_json)
+        
+        traces_json = results_dir / "phase4_hessian_traces.json"
+        with open(traces_json, "w") as f:
+            json.dump(hessian_traces, f, indent=2)
+        logger.info("  → Traces: %s", traces_json)
+        
+        tests_json = results_dir / "phase4_statistical_tests.json"
+        with open(tests_json, "w") as f:
+            json.dump(test_results, f, indent=2, default=str)
+        logger.info("  → Tests: %s", tests_json)
+        
+        logger.info("\n" + "=" * 90)
+        logger.info("PHASE 4 COMPLETE")
+        logger.info("=" * 90)
+        logger.info("Outputs:")
+        logger.info("  • LMC barriers:      %s", barriers_json)
+        logger.info("  • Hessian traces:    %s", traces_json)
+        logger.info("  • Statistical tests: %s", tests_json)
+        logger.info("=" * 90)
+        
+        return {
+            "lmc_barriers": lmc_barriers,
+            "hessian_traces": hessian_traces,
+            "statistical_tests": test_results,
+        }
+    except KeyboardInterrupt as e:
+        logger.info(f"Cancelled by the user: {e}")
 
 
 if __name__ == "__main__":
-    run(verbose=True)
+    import argparse
+
+    args = argparse.ArgumentParser(description="Phase 3: Loss Landscape Analysis")
+    args.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+    parsed_args = args.parse_args()
+
+    run(verbose=parsed_args.verbose)
+
+# loss_landscape

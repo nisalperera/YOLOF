@@ -51,9 +51,9 @@ import numpy as np
 from scipy import stats
 
 from yolof_soup.config.experiment_config import RESULTS_DIR
-from yolof_soup.utils.logging_utils import setup_logging
+from yolof_soup.utils.global_logger import get_logger
 
-logger = setup_logging(logging.INFO, filename="experiments/full_pipeline_test.log", use_stdout=True)
+logger = get_logger()
 
 # COCO class definitions for category grouping
 COCO_CLASSES = [

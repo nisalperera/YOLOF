@@ -41,9 +41,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from scipy import stats
 
-from yolof_soup.utils.logging_utils import setup_logging
+from yolof_soup.utils.global_logger import get_logger
 
-logger = setup_logging(logging.INFO, filename="analysis/statistical_analysis.log", use_stdout=True)
+logger = get_logger()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
