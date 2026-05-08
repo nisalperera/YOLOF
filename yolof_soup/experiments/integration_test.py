@@ -84,10 +84,11 @@ def run_phase_3() -> bool:
     print("=" * 80)
     
     try:
-        from yolof_soup.experiments.soup_construction import run_phase3
+        # CRITICAL FIX: Correct function name is 'run', not 'run_phase3'
+        from yolof_soup.experiments.soup_construction import run as run_soup_construction
         
         print("\nRunning soup construction with 4 conditions...")
-        results = run_phase3()
+        results = run_soup_construction(verbose=True)
         
         # Validate output
         phase3_results = Path(RESULTS_DIR) / "phase3_soup_results.json"
@@ -112,10 +113,11 @@ def run_phase_4() -> bool:
     print("=" * 80)
     
     try:
-        from yolof_soup.experiments.loss_landscape import run_phase4
+        # CRITICAL FIX: Correct function name is 'run', not 'run_phase4'
+        from yolof_soup.experiments.loss_landscape import run as run_loss_landscape
         
         print("\nRunning loss landscape analysis (LMC barriers, Hessian traces)...")
-        results = run_phase4()
+        results = run_loss_landscape(verbose=True)
         
         # Validate outputs
         lmc_results = Path(RESULTS_DIR) / "phase4_lmc_barriers.json"
@@ -146,10 +148,11 @@ def run_phase_5() -> bool:
     print("=" * 80)
     
     try:
-        from yolof_soup.experiments.head_finetuning import run_phase5
+        # CRITICAL FIX: Correct function name is 'run', not 'run_phase5'
+        from yolof_soup.experiments.head_finetuning import run as run_head_finetuning
         
         print("\nRunning head fine-tuning for D1, D2, C3 variants...")
-        results = run_phase5()
+        results = run_head_finetuning(verbose=True)
         
         # Validate outputs
         phase5_results = Path(RESULTS_DIR) / "phase5_finetuning_results.json"

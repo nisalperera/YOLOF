@@ -31,10 +31,11 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
+from detectron2.config import CfgNode
 
 from yolof_soup.config.experiment_config import (
     PHASE2_OUTPUT_DIR,
@@ -74,7 +75,7 @@ HESSIAN_SAMPLES: int = 50
 # ─────────────────────────────────────────────────────────────────────────────
 
 def compute_model_loss(
-    model: torch.nn.Module,
+    model: Union[torch.nn.Module, 'InferenceWrapper'],
     dataloader,
     device: torch.device,
     max_samples: Optional[int] = 500,
@@ -248,7 +249,7 @@ def _l2_norm_squared(state_dict: Dict[str, torch.Tensor]) -> float:
 
 
 def _compute_hessian_trace_hutchinson(
-    model: torch.nn.Module,
+    model: Union[torch.nn.Module, 'InferenceWrapper'],
     dataloader,
     device: torch.device,
     param_keys: Optional[List[str]] = None,
@@ -328,12 +329,7 @@ def _compute_hessian_trace_hutchinson(
                     logger.debug("    Sample %d: Loss is not a tensor", sample_idx)
                     continue
                     
-                    # # Ensure loss requires grad
-                    # if not loss.requires_grad:
-                    #     logger.debug("    Sample %d: Loss does not require grad", sample_idx)
-                    #     continue
-                    
-                # Compute gradient
+                    # Compute gradient
                 grads = torch.autograd.grad(
                     loss, params, create_graph=True, retain_graph=True, allow_unused=True
                 )
@@ -351,10 +347,10 @@ def _compute_hessian_trace_hutchinson(
                     
                     # Compute z^T H z
                     z_hz = sum(
-                        (z * hz).sum() for z, hz in zip(z_list, hessian_z) if hz is not None
-                    )
-                    trace_estimate += float(z_hz.item())
-                    logger.debug("    Sample %d: z^T H z = %.6f", sample_idx, float(z_hz.item()))
+                    (z * hz).sum() for z, hz in zip(z_list, hessian_z) if hz is not None
+                )
+                trace_estimate += float(z_hz.item())
+                logger.debug("    Sample %d: z^T H z = %.6f", sample_idx, float(z_hz.item()))
                 
             except StopIteration:
                 logger.debug("    Sample %d: DataLoader exhausted", sample_idx)
@@ -386,7 +382,7 @@ def _compute_hessian_trace_hutchinson(
 
 def compute_hessian_traces(
     ingredient_states: List[Dict[str, torch.Tensor]],
-    cfgs: List[CfgNode],
+    cfgs: List[Union[CfgNode, Dict]],
     dataloader,
 ) -> Dict[str, Dict[str, float]]:
     """
@@ -556,12 +552,12 @@ def run_statistical_tests(
             "test_name": "RM-ANOVA: Component Hessian traces",
             "n_ingredients": len(ingredient_ids),
             "components": components,
-            "f_statistic": float(res_hessian.anova_table.loc["component", "F"]) if "F" in res_hessian.anova_table.columns else None,
-            "p_value": float(res_hessian.anova_table.loc["component", "PR(>F)"]) if "PR(>F)" in res_hessian.anova_table.columns else None,
+            "f_statistic": f_stat,
+            "p_value": p_value,
             "summary": str(res_hessian),
         }
-        if test3_result["p_value"] is not None:
-            test3_result["interpretation"] = "Significant component differences" if test3_result["p_value"] < 0.05 else "No significant differences"
+        if p_value is not None:
+            test3_result["interpretation"] = "Significant component differences" if p_value < 0.05 else "No significant differences"
     except Exception as e:
         logger.warning("  ✗ Hessian RM-ANOVA failed: %s", e, exc_info=True)
         test3_result = {"status": "error", "error": str(e)}
@@ -602,7 +598,8 @@ def run(verbose: bool = True) -> Dict[str, Any]:
     if logger is None:
         logger = get_logger(
             level=logging.DEBUG if verbose else logging.INFO,
-            add_file_handler=True
+            add_file_handler=True,
+            log_file="phase4_loss_landscape.log"
         )
     try:
         logger.info("=" * 90)

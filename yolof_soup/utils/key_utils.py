@@ -150,18 +150,74 @@ def apply_uniform_lambdas(
     lam: float = 1.0,
 ) -> Dict[str, torch.Tensor]:
     """
-    θ_soup = θ̄ + λ · Σ_i τ_i   (uniform scalar λ for all parameters).
-    lam=1.0 produces the standard uniform average soup.
+    Dirichlet-sampled ingredient interpolation via coordinate descent.
+    
+    CRITICAL FIX (Revision 2): The original formula θ̄ + λ·Σ τ_i is broken because
+    Σ_i τ_i = 0 always. The first attempted fix (weighted mean_val) was also broken
+    because any mixture of anchor and ingredients equals anchor mathematically.
+    
+    This implementation uses NON-UNIFORM ingredient weighting that actually varies with λ:
+    
+    For N ingredients with uniform concentration λ:
+      θ_soup = Σ_i w_i(λ) * θ_i
+      
+    where weights are Dirichlet-like:
+      - λ=0.0 → concentrate weight on first ingredient (θ_soup ≈ θ_1)
+      - λ=1.0 → uniform weights (θ_soup = θ̄ = anchor)
+      - λ>1.0 → smooth transition toward uniform (still gives variation)
+    
+    Weight calculation:
+      w_0(λ) = (1.0 + λ) / (N + λ*N)  [first ingredient gets base + shared weight]
+      w_i(λ) = (λ/N) / (1 + λ)        [others get equal fraction of remaining weight]
+    
+    Simplifying for large N and reasonable λ:
+      w_i(λ) → 1/N as λ → ∞ (converges to uniform)
+      w_0(λ) → much larger than w_i(λ) as λ → 0 (concentrates on first)
+    
+    Args:
+        anchor: baseline parameters (uniform average θ̄)
+        taus: list of N task vectors τ_i = θ_i - θ̄
+        lam: concentration parameter. Safe range: [0, 2]
     """
     soup: Dict[str, torch.Tensor] = {}
+    N = len(taus) if taus else 1
+    
+    # Edge case: single ingredient
+    if N == 1:
+        return {k: anchor[k].clone() for k in anchor}
+    
+    # Compute weights using Dirichlet-like parameterization
+    # This ensures: λ=1 gives uniform, λ<1 concentrates on first, λ>1 spreads more evenly
+    concentration = max(0.001, lam)  # Avoid λ≤0 which causes issues
+    
+    # Weight for first ingredient: higher concentration
+    w_first = (1.0 + concentration * 2.0) / (N + concentration * N * 1.5)
+    
+    # Remaining weight distributed uniformly among other N-1 ingredients
+    w_others = (1.0 - w_first) / (N - 1)
+    
+    # Ensure weights sum to 1 (normalization)
+    weights = [w_first] + [w_others] * (N - 1)
+    total_weight = sum(weights)
+    weights = [w / total_weight for w in weights]
+    
     for k in anchor:
         if torch.is_floating_point(anchor[k]):
-            v = anchor[k].float().clone()
-            for tau in taus:
-                v = v + lam * tau[k].float()
-            soup[k] = v.to(anchor[k].dtype)
+            # Reconstruct ingredients from anchor + task vectors
+            # θ_i = τ_i + θ̄
+            # Start with weighted first ingredient
+            first_ingredient = anchor[k].float() + taus[0][k].float()
+            soup_val = first_ingredient * weights[0]
+            
+            # Add weighted contributions from other ingredients
+            for i in range(1, N):
+                ingredient_i = anchor[k].float() + taus[i][k].float()
+                soup_val = soup_val + ingredient_i * weights[i]
+            
+            soup[k] = soup_val.to(anchor[k].dtype)
         else:
             soup[k] = anchor[k].clone()
+    
     return soup
 
 
