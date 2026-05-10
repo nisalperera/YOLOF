@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 from yolof_soup.config.experiment_config import RESULTS_DIR, EVAL_DATASET, build_eval_cfg
 from yolof_soup.config.experiment_registry import get_run_specs
 from yolof_soup.utils.eval_utils import compute_coco_map, extract_per_class_ap
-from yolof_soup.utils.inference import InferenceWrapper
+from yolof_soup.utils.inference import EvaluateModel
 from yolof_soup.utils.global_logger import get_logger
 
 logger = get_logger()
@@ -77,7 +77,7 @@ def audit_single_ingredient(
             "error": "Checkpoint file not found",
         }
         
-    predictor = InferenceWrapper(cfg)  # Rebuild model to ensure correct device, etc.
+    predictor = EvaluateModel(cfg)  # Rebuild model to ensure correct device, etc.
 
     # Evaluate
     try:

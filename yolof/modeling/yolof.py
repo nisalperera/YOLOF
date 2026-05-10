@@ -290,6 +290,9 @@ class YOLOF(nn.Module):
             self.encoder(features[0]))
         # Transpose the Hi*Wi*A dimension to the middle:
         pred_logits = [permute_to_N_HWA_K(pred_logits, self.num_classes)]
+        print(f"logit min:  {pred_logits[0].min().item():.3f}")
+        print(f"logit max:  {pred_logits[0].max().item():.3f}")
+        print(f"logit mean: {pred_logits[0].mean().item():.3f}")
         pred_anchor_deltas = [permute_to_N_HWA_K(pred_anchor_deltas, 4)]
 
         if self.training:

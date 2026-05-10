@@ -38,16 +38,21 @@ import torch
 from yolof_soup.config.experiment_config import (
     CHECKPOINT_DIR,
     DEVICE,
-    EVAL_DATASET,
+    TRAIN_DATASET,
     RESULTS_DIR,
-    # SELECTION_DATASET,
+    SELECTION_DATASET,
     PHASE2_OUTPUT_DIR,
     build_eval_cfg,
 )
 from yolof_soup.config.experiment_registry import get_run_specs
-from yolof_soup.utils.inference import InferenceWrapper
-from yolof_soup.utils.checkpoint_utils import load_states, save_checkpoint
-from yolof_soup.utils.eval_utils import build_eval_dataloader, get_map, extract_per_class_ap
+from yolof_soup.utils.inference import EvaluateModel
+from yolof_soup.utils.checkpoint_utils import load_states, load_state, save_checkpoint
+from yolof_soup.utils.eval_utils import (
+    build_eval_dataloader, 
+    build_train_dataloader,
+    get_map, 
+    extract_per_class_ap
+)
 from yolof_soup.utils.key_utils import (
     apply_uniform_lambdas,
     compute_anchor,
@@ -57,6 +62,7 @@ from yolof_soup.utils.key_utils import (
     get_backbone_encoder_keys,
     merge_subdicts,
     split_decoder_subheads,
+    calibrate_bn
 )
 from yolof_soup.utils.state_dict_utils import assign_state_to_model
 from yolof_soup.utils.global_logger import get_logger
@@ -79,7 +85,7 @@ USE_HESSIAN_FOR_FISHER: bool = False
 # Condition 1 (M1): Global Uniform Averaging
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_condition_1_global_uniform(
+def build_global_uniform_souped_model(
     ingredient_states: List[Dict[str, torch.Tensor]],
 ) -> Dict[str, torch.Tensor]:
     """
@@ -229,13 +235,13 @@ def _coordinate_descent_search(
         full_state = merge_subdicts(be_dict, cls_merged, reg_merged, shared_merged)
         
         # Evaluate complete model
-        model = InferenceWrapper(cfg)
+        model = EvaluateModel(cfg)
         assign_state_to_model(model, full_state)
         model = model.to(DEVICE)
         model.eval()
         
         try:
-            map_val = get_map(model.model, cfg, EVAL_DATASET, output_dir=Path(RESULTS_DIR) / "cd_search", tag=f"{search_branch}_lam{lam:.2f}")
+            map_val = get_map(model.model, cfg, SELECTION_DATASET, output_dir=Path(RESULTS_DIR) / "cd_search", tag=f"{search_branch}_lam{lam:.2f}")
             logger.debug("  [CD search %s] λ=%.3f → mAP=%.4f", search_branch, lam, map_val)
             
             if map_val > best_map:
@@ -363,7 +369,7 @@ def evaluate_condition(
     logger.info("Evaluating condition %s on eval split...", tag)
     
     # Build and load model
-    model = InferenceWrapper(cfg)
+    model = EvaluateModel(cfg)
     # logger.info(f"State dict keys sample (first 5): {list(state_dict.keys())[:5]}")
     # logger.info(f"State dict num keys: {len(state_dict)}")
     # model_state_before = model.model.state_dict()
@@ -378,7 +384,7 @@ def evaluate_condition(
     # Run evaluation
     try:
         from yolof_soup.utils.eval_utils import compute_coco_map
-        results_dict = compute_coco_map(model, cfg, EVAL_DATASET, output_dir=Path(RESULTS_DIR) / "phase3_eval", tag=tag)
+        results_dict = compute_coco_map(model, cfg, SELECTION_DATASET, output_dir=Path(RESULTS_DIR) / "phase3_eval", tag=tag)
         
         map_val = float(results_dict.get("AP", 0.0))
         map50_val = float(results_dict.get("AP50", 0.0))
@@ -479,101 +485,107 @@ def run(verbose: bool = True) -> Dict[str, Any]:
     
     # Build dataloaders
     logger.info("\n[3/6] Building dataloaders...")
-    eval_dataloader = build_eval_dataloader(cfg, EVAL_DATASET)
-    selection_dataloader = build_eval_dataloader(cfg, EVAL_DATASET)
+    selection_dataloader = build_eval_dataloader(cfg, SELECTION_DATASET)
+    train_dataloader = build_train_dataloader(cfg, TRAIN_DATASET)
     logger.info("  ✓ Dataloaders ready")
     
     # Build all 4 conditions
-    logger.info("\n[4/6] Building 4 soup conditions...")
-    condition_1_state = build_condition_1_global_uniform(ingredient_states)
-    results_cond1 = evaluate_condition(condition_1_state, cfg, "condition_1")
+    logger.info("\n[4/6] Building global uniform soup conditions...")
+    condition_1_state = build_global_uniform_souped_model(ingredient_states)
+    # Check the cls_score weight norms directly
+    for k, v in condition_1_state.items():
+        if "cls_score" in k or "cls_pred" in k:
+            print(f"{k}: norm={v.norm().item():.4f}  mean={v.mean().item():.4f}  std={v.std().item():.4f}")
+    # condition_1_state = calibrate_bn(cfg, condition_1_state, train_dataloader, n_batches=50, device=DEVICE)
+    results_cond1 = evaluate_condition(load_state(ingredient_paths[0]), cfg, "condition_1")
 
     condition_2_state = build_condition_2_branch_uniform(ingredient_states)
-    results_cond2 = evaluate_condition(condition_2_state, cfg, "condition_2")
+    condition_2_state = calibrate_bn(cfg, condition_2_state, train_dataloader, n_batches=50, device=DEVICE)
+    # results_cond2 = evaluate_condition(condition_2_state, cfg, "condition_2")
     
-    condition_3_state = build_condition_3_dirichlet_cd(
-        ingredient_states, cfg, selection_dataloader
-    )
-    condition_4_state = build_condition_4_fisher_weighted(ingredient_states)
-    logger.info("  ✓ All 4 conditions built")
+    # condition_3_state = build_condition_3_dirichlet_cd(
+    #     ingredient_states, cfg, selection_dataloader
+    # )
+    # condition_4_state = build_condition_4_fisher_weighted(ingredient_states)
+    # logger.info("  ✓ All 4 conditions built")
     
-    # Evaluate all 4 conditions
-    logger.info("\n[5/6] Evaluating all 4 conditions on eval split...")
-    results_cond1 = evaluate_condition(condition_1_state, cfg, "condition_1")
-    results_cond2 = evaluate_condition(condition_2_state, cfg, "condition_2")
-    results_cond3 = evaluate_condition(condition_3_state, cfg, "condition_3")
-    results_cond4 = evaluate_condition(condition_4_state, cfg, "condition_4")
+    # # Evaluate all 4 conditions
+    # logger.info("\n[5/6] Evaluating all 4 conditions on eval split...")
+    # results_cond1 = evaluate_condition(condition_1_state, cfg, "condition_1")
+    # results_cond2 = evaluate_condition(condition_2_state, cfg, "condition_2")
+    # results_cond3 = evaluate_condition(condition_3_state, cfg, "condition_3")
+    # results_cond4 = evaluate_condition(condition_4_state, cfg, "condition_4")
     
-    # Also evaluate best individual (ingredient 0 as reference)
-    results_best_individual = evaluate_condition(ingredient_states[0], cfg, "best_individual")
-    logger.info("  ✓ All evaluations complete")
+    # # Also evaluate best individual (ingredient 0 as reference)
+    # results_best_individual = evaluate_condition(ingredient_states[0], cfg, "best_individual")
+    # logger.info("  ✓ All evaluations complete")
     
-    # Determine best learned condition
-    map_3 = results_cond3["map50_95"]
-    map_4 = results_cond4["map50_95"]
-    best_learned_is_cond3 = map_3 >= map_4
-    best_learned_state = condition_3_state if best_learned_is_cond3 else condition_4_state
-    best_learned_tag = "condition_3" if best_learned_is_cond3 else "condition_4"
+    # # Determine best learned condition
+    # map_3 = results_cond3["map50_95"]
+    # map_4 = results_cond4["map50_95"]
+    # best_learned_is_cond3 = map_3 >= map_4
+    # best_learned_state = condition_3_state if best_learned_is_cond3 else condition_4_state
+    # best_learned_tag = "condition_3" if best_learned_is_cond3 else "condition_4"
     
-    logger.info("\nBest learned condition:")
-    logger.info("  → Condition 3 (Dirichlet): mAP50:95=%.4f", map_3)
-    logger.info("  → Condition 4 (Fisher):    mAP50:95=%.4f", map_4)
-    logger.info("  → Best: %s (mAP50:95=%.4f)", best_learned_tag, max(map_3, map_4))
+    # logger.info("\nBest learned condition:")
+    # logger.info("  → Condition 3 (Dirichlet): mAP50:95=%.4f", map_3)
+    # logger.info("  → Condition 4 (Fisher):    mAP50:95=%.4f", map_4)
+    # logger.info("  → Best: %s (mAP50:95=%.4f)", best_learned_tag, max(map_3, map_4))
     
-    # Save checkpoints
-    logger.info("\n[6/6] Saving checkpoints...")
-    branch_uniform_path = checkpoint_dir / "branch_uniform_soup.pth"
-    best_learned_path = checkpoint_dir / "best_learned_soup.pth"
-    global_uniform_path = checkpoint_dir / "global_uniform_soup.pth"
+    # # Save checkpoints
+    # logger.info("\n[6/6] Saving checkpoints...")
+    # branch_uniform_path = checkpoint_dir / "branch_uniform_soup.pth"
+    # best_learned_path = checkpoint_dir / "best_learned_soup.pth"
+    # global_uniform_path = checkpoint_dir / "global_uniform_soup.pth"
     
-    save_checkpoint(
-        branch_uniform_path,
-        condition_2_state,
-        metadata={"condition": 2, "method": "branch_uniform", "map50_95": results_cond2["map50_95"]},
-    )
-    save_checkpoint(
-        best_learned_path,
-        best_learned_state,
-        metadata={"condition": 3 if best_learned_is_cond3 else 4, "method": best_learned_tag, "map50_95": max(map_3, map_4)},
-    )
-    save_checkpoint(
-        global_uniform_path,
-        condition_1_state,
-        metadata={"condition": 1, "method": "global_uniform", "map50_95": results_cond1["map50_95"]},
-    )
-    logger.info("  ✓ Checkpoints saved")
+    # save_checkpoint(
+    #     branch_uniform_path,
+    #     condition_2_state,
+    #     metadata={"condition": 2, "method": "branch_uniform", "map50_95": results_cond2["map50_95"]},
+    # )
+    # save_checkpoint(
+    #     best_learned_path,
+    #     best_learned_state,
+    #     metadata={"condition": 3 if best_learned_is_cond3 else 4, "method": best_learned_tag, "map50_95": max(map_3, map_4)},
+    # )
+    # save_checkpoint(
+    #     global_uniform_path,
+    #     condition_1_state,
+    #     metadata={"condition": 1, "method": "global_uniform", "map50_95": results_cond1["map50_95"]},
+    # )
+    # logger.info("  ✓ Checkpoints saved")
     
-    # Compile and save results JSON
-    logger.info("\nSaving results JSON...")
-    results = {
-        "condition_1": results_cond1,
-        "condition_2": results_cond2,
-        "condition_3": results_cond3,
-        "condition_4": results_cond4,
-        "best_individual": results_best_individual,
-        "best_learned_condition": best_learned_tag,
-        "metadata": {
-            "n_ingredients": 6,
-            "cd_lambda_grid": CD_LAMBDA_GRID,
-        },
-    }
+    # # Compile and save results JSON
+    # logger.info("\nSaving results JSON...")
+    # results = {
+    #     "condition_1": results_cond1,
+    #     "condition_2": results_cond2,
+    #     "condition_3": results_cond3,
+    #     "condition_4": results_cond4,
+    #     "best_individual": results_best_individual,
+    #     "best_learned_condition": best_learned_tag,
+    #     "metadata": {
+    #         "n_ingredients": 6,
+    #         "cd_lambda_grid": CD_LAMBDA_GRID,
+    #     },
+    # }
     
-    results_json_path = results_dir / "phase3_soup_results.json"
-    with open(results_json_path, "w") as f:
-        json.dump(results, f, indent=2)
-    logger.info("  → Results: %s", results_json_path)
+    # results_json_path = results_dir / "phase3_soup_results.json"
+    # with open(results_json_path, "w") as f:
+    #     json.dump(results, f, indent=2)
+    # logger.info("  → Results: %s", results_json_path)
     
-    logger.info("\n" + "=" * 90)
-    logger.info("PHASE 3 COMPLETE")
-    logger.info("=" * 90)
-    logger.info("Outputs:")
-    logger.info("  • Global-uniform soup:   %s", global_uniform_path)
-    logger.info("  • Branch-uniform soup:   %s", branch_uniform_path)
-    logger.info("  • Best learned soup:     %s", best_learned_path)
-    logger.info("  • Results JSON:          %s", results_json_path)
-    logger.info("=" * 90)
+    # logger.info("\n" + "=" * 90)
+    # logger.info("PHASE 3 COMPLETE")
+    # logger.info("=" * 90)
+    # logger.info("Outputs:")
+    # logger.info("  • Global-uniform soup:   %s", global_uniform_path)
+    # logger.info("  • Branch-uniform soup:   %s", branch_uniform_path)
+    # logger.info("  • Best learned soup:     %s", best_learned_path)
+    # logger.info("  • Results JSON:          %s", results_json_path)
+    # logger.info("=" * 90)
     
-    return results
+    # return results
 
 
 if __name__ == "__main__":

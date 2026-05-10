@@ -12,12 +12,13 @@ Decoder sub-head patterns match yolof/modeling/decoder/ attribute names.
 
 from __future__ import annotations
 
-import logging
 from typing import Dict, List, Tuple
 
 import torch
 
+from detectron2.config import CfgNode
 from yolof.analysis.model_soup import _is_backbone_encoder
+from yolof_soup.utils.inference import BNCalibration
 from yolof_soup.utils.global_logger import get_logger
 
 logger = get_logger()
@@ -110,7 +111,9 @@ def compute_anchor(
     anchor: Dict[str, torch.Tensor] = {}
     _BN_BUFFERS = ("running_mean", "running_var", "num_batches_tracked")
 
-    for k in state_dicts[0]:
+    sd_keys = list(state_dicts[0].keys())
+
+    for k in sd_keys:
         is_bn = any(k.endswith(s) for s in _BN_BUFFERS)
         if torch.is_floating_point(state_dicts[0][k]) and not is_bn:
             anchor[k] = (
@@ -121,6 +124,119 @@ def compute_anchor(
         else:
             anchor[k] = state_dicts[0][k].clone()  # best model's BN stats
     return anchor
+
+
+import torch.nn as nn
+from detectron2.layers import FrozenBatchNorm2d
+
+
+def calibrate_bn(
+    cfg: CfgNode,
+    state_dict: Dict[str, torch.Tensor],
+    dataloader,
+    n_batches: int = 50,
+    device: str | torch.device = "cuda",
+) -> Dict[str, torch.Tensor]:
+    """
+    Recompute BatchNorm running statistics for a merged soup model.
+    Only true nn.BatchNorm2d layers are expected to update.
+    FrozenBatchNorm2d layers are intentionally excluded from the check.
+    """
+    model = BNCalibration(cfg, state_dict)
+
+    # ── Classify BN keys by module type ───────────────────────────────────
+    frozen_prefixes: set[str] = set()
+    live_prefixes:   set[str] = set()
+
+    for name, module in model.model.named_modules():
+        if isinstance(module, FrozenBatchNorm2d):
+            frozen_prefixes.add(name)
+        elif isinstance(module, (nn.BatchNorm2d, nn.SyncBatchNorm)):
+            live_prefixes.add(name)
+
+    def _module_prefix(key: str) -> str:
+        # key = "backbone.layer1.0.norm.running_mean"
+        # prefix = "backbone.layer1.0.norm"
+        return ".".join(key.split(".")[:-1])
+
+    _BN_SUFFIXES = ("running_mean", "running_var", "num_batches_tracked")
+
+    before_bn_dict = {
+        k: v.clone()
+        for k, v in state_dict.items()
+        if k.endswith(_BN_SUFFIXES)
+    }
+
+    # ── Forward pass ──────────────────────────────────────────────────────
+    model.to(device)
+    model.train()
+    logger.info("Calibrating BN statistics (%d batches)…", n_batches)
+    processed = 0
+    with torch.no_grad():
+        for batch in dataloader:
+            if processed >= n_batches:
+                break
+            try:
+                model(batch)
+            except Exception as e:
+                logger.warning(
+                    "BN calibration batch %d failed: %s", processed, e,
+                    exc_info=True,
+                )
+            processed += 1
+    model.eval()
+    logger.info("BN calibration complete (%d batches processed).", processed)
+
+    after_state  = model.model.state_dict()
+    after_bn_dict = {k: v for k, v in after_state.items() if k.endswith(_BN_SUFFIXES)}
+
+    # ── Verify only live BN layers ────────────────────────────────────────
+    failed_keys: list[str] = []
+
+    for k, before_v in before_bn_dict.items():
+        prefix = _module_prefix(k)
+
+        if prefix in frozen_prefixes:
+            logger.debug("Skipping frozen BN key (expected): %s", k)
+            continue
+
+        if k not in after_bn_dict:
+            logger.warning("BN key '%s' missing from calibrated model.", k)
+            failed_keys.append(k)
+            continue
+
+        after_v = after_bn_dict[k].cpu()
+        before_v = before_v.cpu()
+
+        if torch.equal(before_v, after_v):
+            if prefix in live_prefixes:
+                # A live BN that didn't update is a real problem
+                logger.error(
+                    "Live BN stat '%s' was NOT updated during calibration. "
+                    "Check that the dataloader reaches this module.",
+                    k,
+                )
+                failed_keys.append(k)
+            else:
+                # Unknown module type — log warning but don't fail
+                logger.warning(
+                    "BN stat '%s' (unknown module type) unchanged. "
+                    "Prefix: %s", k, prefix,
+                )
+        else:
+            logger.debug("BN stat '%s' updated ✓", k)
+
+    if failed_keys:
+        raise RuntimeError(
+            f"BN calibration failed: {len(failed_keys)} live BatchNorm2d "
+            f"stats were not updated:\n  " + "\n  ".join(failed_keys[:10])
+        )
+
+    logger.info(
+        "BN calibration verified: all live BatchNorm2d stats updated. "
+        "FrozenBatchNorm2d layers skipped (expected)."
+    )
+    return after_state
 
 
 def compute_task_vectors(

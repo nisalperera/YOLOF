@@ -53,7 +53,7 @@ from yolof_soup.utils.key_utils import (
     get_decoder_keys,
     split_decoder_subheads,
 )
-from yolof_soup.utils.inference import InferenceWrapper
+from yolof_soup.utils.inference import EvaluateModel
 from yolof_soup.utils.state_dict_utils import assign_state_to_model
 from yolof_soup.utils.global_logger import get_logger
 
@@ -75,7 +75,7 @@ HESSIAN_SAMPLES: int = 50
 # ─────────────────────────────────────────────────────────────────────────────
 
 def compute_model_loss(
-    model: Union[torch.nn.Module, 'InferenceWrapper'],
+    model: Union[torch.nn.Module, 'EvaluateModel'],
     dataloader,
     device: torch.device,
     max_samples: Optional[int] = 500,
@@ -126,7 +126,7 @@ def compute_lmc_barrier(
         state_interp = interpolate_state(state_a, state_b, float(alpha))
         
         # Build model and compute loss
-        model = InferenceWrapper(cfg)
+        model = EvaluateModel(cfg)
         assign_state_to_model(model, state_interp)
         model = model.to(DEVICE)
         model.eval()
@@ -249,7 +249,7 @@ def _l2_norm_squared(state_dict: Dict[str, torch.Tensor]) -> float:
 
 
 def _compute_hessian_trace_hutchinson(
-    model: Union[torch.nn.Module, 'InferenceWrapper'],
+    model: Union[torch.nn.Module, 'EvaluateModel'],
     dataloader,
     device: torch.device,
     param_keys: Optional[List[str]] = None,
@@ -275,7 +275,12 @@ def _compute_hessian_trace_hutchinson(
     # Collect parameters (optionally filtered by keys)
     if param_keys is not None:
         # Build mapping of parameter names to parameters
-        param_dict = {name: param for name, param in model.named_parameters()}
+        if isinstance(model, EvaluateModel):
+            named_params = model.model.named_parameters()
+        else:
+            named_params = model.named_parameters()
+
+        param_dict = {name: param for name, param in named_params}
         params = [param_dict[key] for key in param_keys if key in param_dict]
         if not params:
             logger.warning("    No parameters found for keys: %s", param_keys[:3])
@@ -307,7 +312,10 @@ def _compute_hessian_trace_hutchinson(
             z_list = [torch.randint(0, 2, p.shape, device=device).float() * 2 - 1 for p in params]
             
             # Compute z^T ∇L
-            model.zero_grad()
+            if isinstance(model, EvaluateModel):
+                model.model.zero_grad()
+            else:
+                model.zero_grad()
             
             # Get a batch and compute loss
             grads = None
@@ -375,7 +383,10 @@ def _compute_hessian_trace_hutchinson(
         trace_estimate = total_norm
         logger.warning("    Falling back to L2-norm proxy: %.6f", trace_estimate)
     finally:
-        model.zero_grad()
+        if isinstance(model, EvaluateModel):
+            model.model.zero_grad()
+        else:
+            model.zero_grad()
     
     return float(trace_estimate)
 
@@ -419,7 +430,7 @@ def compute_hessian_traces(
         
         if use_full_hessian:
             # Load FULL model once per ingredient
-            model = InferenceWrapper(cfgs[idx])
+            model = EvaluateModel(cfgs[idx])
             assign_state_to_model(model, state)
             
             # Compute Hessian traces for each component using filtered parameters

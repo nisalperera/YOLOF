@@ -4,22 +4,24 @@ from typing import Dict
 
 import torch
 
-from yolof_soup.utils.inference import InferenceWrapper
+from yolof_soup.utils.inference import EvaluateModel
 from yolof_soup.utils.global_logger import get_logger
 
 logger = get_logger(logging.DEBUG, add_file_handler=True)  # Use global logger for diagnostics
 
 def assign_state_to_model(
-    model: torch.nn.Module | InferenceWrapper,
+    model: torch.nn.Module | EvaluateModel,
     state_dict: Dict[str, torch.Tensor],
-    prefix: str = "decoder."
 ) -> None:
     """In-place replace model's decoder weights with those from state_dict."""
     
 
-    model_state = model.state_dict()
+    if isinstance(model, EvaluateModel):
+        model_state = model.model.state_dict()
+    else:
+        model_state = model.state_dict()
     
-    # DIAGNOSTIC: Find missing keys (only log if there are issues)
+    # Find missing keys (only log if there are issues)
     incoming_keys = set(state_dict.keys())
     model_keys = set(model_state.keys())
     missing_keys = model_keys - incoming_keys
@@ -45,4 +47,7 @@ def assign_state_to_model(
     
     # Apply update
     model_state.update(state_dict)
-    model.load_state_dict(model_state, strict=True)  # strict=True to ensure all keys are present
+    if isinstance(model, EvaluateModel):
+        model.model.load_state_dict(model_state, strict=True)  # strict=False to allow missing keys
+    else:
+        model.load_state_dict(model_state, strict=True)  # strict=True to ensure all keys are present

@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import torch
-from detectron2.data import DatasetCatalog, build_detection_test_loader
+from detectron2.data import DatasetCatalog, build_detection_test_loader, build_detection_train_loader
 from detectron2.evaluation import inference_on_dataset
 
 from yolof.analysis.mode_connectivity import evaluate_loss_on_dataset
@@ -50,6 +50,22 @@ def build_eval_dataloader(cfg, dataset_name: Optional[str] = None):
     mapper  = YOLOFDatasetMapper(cfg, is_train=False)
     sampler = EvenlyDistributedInferenceSampler(len(DatasetCatalog.get(name)))
     return build_detection_test_loader(cfg, name, mapper=mapper, sampler=sampler)
+
+
+def build_train_dataloader(cfg, dataset_name: Optional[str] = None, batch_size=8):
+    """
+    Build a Detectron2 test DataLoader using YOLOFDatasetMapper.
+
+    Args:
+        cfg:          Detectron2 CfgNode (fully merged).
+        dataset_name: Override; defaults to cfg.DATASETS.TEST[0].
+
+    Returns:
+        DataLoader compatible with both compute_coco_map and quick_loss.
+    """
+    name    = dataset_name or cfg.DATASETS.TRAIN[0]
+    mapper = YOLOFDatasetMapper(cfg, True)
+    return build_detection_train_loader(cfg, mapper=mapper)
 
 
 def compute_coco_map(
