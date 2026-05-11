@@ -481,28 +481,39 @@ def run(verbose: bool = True) -> Dict[str, Any]:
     logger.info("\n[2/6] Building Detectron2 config...")
     # cfgs = [build_eval_cfg(EVAL_DATASET, str(cfg_path), ckpt_file) for cfg_path, ckpt_file in zip(cfg_paths, ingredient_paths)]
     cfg = build_eval_cfg()
+    cal_cfg = build_eval_cfg(calibration=True)
     logger.info("  ✓ Config ready")
     
     # Build dataloaders
     logger.info("\n[3/6] Building dataloaders...")
     selection_dataloader = build_eval_dataloader(cfg, SELECTION_DATASET)
-    train_dataloader = build_train_dataloader(cfg, TRAIN_DATASET)
-    logger.info("  ✓ Dataloaders ready")
+    train_dataloader = build_train_dataloader(cal_cfg, TRAIN_DATASET)
+
+    if hasattr(selection_dataloader.dataset, 'sampler'):
+        selection_dataset_size = selection_dataloader.dataset.sampler._size  
+    else:
+        selection_dataset_size = len(selection_dataloader.dataset._dataset)
+
+    if hasattr(train_dataloader.dataset.dataset, 'sampler'):
+        train_dataset_size = train_dataloader.dataset.dataset.sampler._size 
+    else:
+        train_dataset_size = len(train_dataloader.dataset._dataset)
+
+    logger.info(f"  ✓ Dataloaders ready: Train loader with {int(train_dataset_size / train_dataloader.batch_size)} batches "
+                f"and Selection loader with {int(selection_dataset_size / selection_dataloader.batch_size)} batches")
     
     # Build all 4 conditions
     logger.info("\n[4/6] Building global uniform soup conditions...")
     condition_1_state = build_global_uniform_souped_model(ingredient_states)
-    # Check the cls_score weight norms directly
-    for k, v in condition_1_state.items():
-        if "cls_score" in k or "cls_pred" in k:
-            print(f"{k}: norm={v.norm().item():.4f}  mean={v.mean().item():.4f}  std={v.std().item():.4f}")
-    # condition_1_state = calibrate_bn(cfg, condition_1_state, train_dataloader, n_batches=50, device=DEVICE)
-    results_cond1 = evaluate_condition(load_state(ingredient_paths[0]), cfg, "condition_1")
+    condition_1_state = calibrate_bn(cal_cfg, condition_1_state, train_dataloader, n_batches=int(train_dataset_size / train_dataloader.batch_size), device=DEVICE)
 
     condition_2_state = build_condition_2_branch_uniform(ingredient_states)
-    condition_2_state = calibrate_bn(cfg, condition_2_state, train_dataloader, n_batches=50, device=DEVICE)
-    # results_cond2 = evaluate_condition(condition_2_state, cfg, "condition_2")
-    
+    condition_2_state = calibrate_bn(cal_cfg, condition_2_state, train_dataloader, n_batches=int(train_dataset_size / train_dataloader.batch_size), device=DEVICE)
+    results_cond2 = evaluate_condition(condition_2_state, cfg, "condition_2")
+
+    logger.info("\nCondition 2 (Branch Uniform) evaluation results:")
+    logger.info(results_cond2)
+
     # condition_3_state = build_condition_3_dirichlet_cd(
     #     ingredient_states, cfg, selection_dataloader
     # )

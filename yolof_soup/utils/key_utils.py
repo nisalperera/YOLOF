@@ -184,6 +184,9 @@ def calibrate_bn(
                     exc_info=True,
                 )
             processed += 1
+            if processed % 1000 == 0:
+                logger.info("  Processed %d/%d batches…", processed, n_batches)
+                
     model.eval()
     logger.info("BN calibration complete (%d batches processed).", processed)
 

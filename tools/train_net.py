@@ -223,7 +223,26 @@ class Trainer(DefaultTrainer):
         Overrides DefaultTrainer.build_model.
         """
         model = super().build_model(cfg)          # builds YOLOF normally + moves to device
-        model = cls._freeze_and_reinit_decoder(model)
+        
+        frozen_backbone = 0
+        for p in model.backbone.parameters():
+            if not p.requires_grad:
+                frozen_backbone += p.numel()
+
+        frozen_encoder = 0
+        for p in model.encoder.parameters():
+            if not p.requires_grad:
+                frozen_encoder += p.numel()
+
+        frozen_decoder = 0
+        for p in model.decoder.parameters():
+            if not p.requires_grad:
+                frozen_decoder += p.numel()
+
+        cls.logger.info(f"[FrozenParams] Frozen backbone params : {frozen_backbone:,}")
+        cls.logger.info(f"[FrozenParams] Frozen encoder params  : {frozen_encoder:,}")
+        cls.logger.info(f"[FrozenParams] Frozen decoder params: {frozen_decoder:,}")
+        
         return model
 
 
@@ -234,39 +253,6 @@ class Trainer(DefaultTrainer):
         if resume and self.checkpointer.has_checkpoint():
             self.iter = checkpoints.get("iteration", 0)
             self.start_iter = self.iter + 1
-
-    @classmethod
-    def _freeze_and_reinit_decoder(cls, model):
-        """
-        Freeze backbone and encoder parameters.
-        Re-initialise decoder from scratch using its own _init_weight().
-        This ensures LMC/soup experiments compare models that differ only
-        in how the decoder converged from the same random distribution.
-        """
-
-        # 1. Freeze backbone
-        frozen_backbone = 0
-        for p in model.backbone.parameters():
-            if not p.requires_grad:
-                frozen_backbone += p.numel()
-
-        # 2. Freeze encoder
-        frozen_encoder = 0
-        for p in model.encoder.parameters():
-            if not p.requires_grad:
-                frozen_encoder += p.numel()
-
-        # Make absolutely sure decoder parameters are trainable
-        frozen_decoder = 0
-        for p in model.decoder.parameters():
-            if not p.requires_grad:
-                frozen_decoder += p.numel()
-
-        cls.logger.info(f"[FreezeReinit] Frozen backbone params : {frozen_backbone:,}")
-        cls.logger.info(f"[FreezeReinit] Frozen encoder params  : {frozen_encoder:,}")
-        cls.logger.info(f"[FreezeReinit] Frozen decoder params: {frozen_decoder:,}")
-        return model
-
 
 
 def setup(args):

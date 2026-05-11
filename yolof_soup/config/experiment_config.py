@@ -52,7 +52,8 @@ logger = get_logger()
 NUM_GPUS: int = int(os.environ.get("THESIS_NUM_GPUS", "1"))
 
 #: Batch size per GPU for training. Override with env var THESIS_BATCH_SIZE_PER_GPU.
-BATCH_SIZE_PER_GPU: int = int(os.environ.get("THESIS_BATCH_SIZE_PER_GPU", "8"))
+BATCH_SIZE_PER_GPU: int = int(os.environ.get("THESIS_BATCH_SIZE_PER_GPU", "16"))
+CAL_BATCH_SIZE_PER_GPU: int = int(os.environ.get("THESIS_CAL_BATCH_SIZE_PER_GPU", "32"))
 
 #: Primary compute device for non-Detectron2 code (soup arithmetic, stats).
 DEVICE: torch.device = torch.device(
@@ -300,7 +301,7 @@ def _base_yolof_cfg(weights_path: str = PRETRAINED_WEIGHTS):
 
     # ── Hardware ──────────────────────────────────────────────────────────────
     cfg.MODEL.DEVICE           = str(DEVICE)
-    cfg.SOLVER.IMS_PER_BATCH   = BATCH_SIZE_PER_GPU * max(NUM_GPUS, 1)
+
     cfg.DATALOADER.NUM_WORKERS = int(os.environ.get("THESIS_NUM_WORKERS", "4"))
 
     # ── Pretrained weights ────────────────────────────────────────────────────
@@ -318,7 +319,7 @@ def _base_yolof_cfg(weights_path: str = PRETRAINED_WEIGHTS):
 
 # ── Evaluation / inference config ─────────────────────────────────────────────
 
-def build_eval_cfg(dataset: str = EVAL_DATASET, cfg_file: str | Path = YOLOF_BASE_YAML, weights_path: str | Path = PRETRAINED_WEIGHTS):
+def build_eval_cfg(dataset: str = EVAL_DATASET, cfg_file: str | Path = YOLOF_BASE_YAML, weights_path: str | Path = PRETRAINED_WEIGHTS, calibration: bool = False):
     """
     Lightweight CfgNode for inference-only passes (soup evaluation,
     loss landscape measurement, cross-domain evaluation).
@@ -348,6 +349,11 @@ def build_eval_cfg(dataset: str = EVAL_DATASET, cfg_file: str | Path = YOLOF_BAS
                 "Custom eval weights not found at %s — using defaults. "
                 "Set env var YOLOF_CONFIG_DIR to fix this.", weights_path
             )
+
+    if calibration:
+        cfg.SOLVER.IMS_PER_BATCH = CAL_BATCH_SIZE_PER_GPU * max(NUM_GPUS, torch.cuda.device_count())
+    else:
+        cfg.SOLVER.IMS_PER_BATCH = BATCH_SIZE_PER_GPU * max(NUM_GPUS, torch.cuda.device_count())
 
     cfg.DATASETS.TRAIN = (TRAIN_DATASET,)
     cfg.DATASETS.TEST  = (dataset,)
