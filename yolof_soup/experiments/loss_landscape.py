@@ -33,8 +33,14 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+
 import numpy as np
 import torch
+import torch.multiprocessing as mp
+
 from detectron2.config import CfgNode
 
 from yolof_soup.config.experiment_config import (
@@ -68,6 +74,13 @@ LMC_ALPHA_STEPS: int = 11
 
 #: Number of Rademacher vectors for Hessian trace estimation
 HESSIAN_SAMPLES: int = 50
+
+CORE_GROUPS = [
+    list(range(0, 6)),    # Model 0 → cores 0–5
+    list(range(6, 12)),   # Model 1 → cores 6–11
+    list(range(12, 18)),  # Model 2 → cores 12–17
+    list(range(18, 24)),  # Model 3 → cores 18–23
+]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -109,6 +122,7 @@ def compute_lmc_barrier(
     state_b: Dict[str, torch.Tensor],
     cfg,
     dataloader,
+    common_states: List[Dict[str, torch.Tensor]] = [],
     n_steps: int = 11,
 ) -> Tuple[float, List[float]]:
     """
@@ -124,10 +138,18 @@ def compute_lmc_barrier(
     for alpha in alphas:
         # Interpolate state
         state_interp = interpolate_state(state_a, state_b, float(alpha))
+        _state_interp = {k: v.clone() for k, v in state_interp.items()}  # Clone to avoid in-place issues
         
+        for common_state in common_states:
+            state_interp.update(common_state)  # Override with common components
+
+        for k in state_a:
+            if not torch.equal(state_interp[k], _state_interp[k]):
+                logger.warning("  [LMC] α=%.2f: State interpolation mismatch on key '%s'", alpha, k)
+
         # Build model and compute loss
-        model = EvaluateModel(cfg)
-        assign_state_to_model(model, state_interp)
+        model = EvaluateModel(cfg, state_dict=state_interp)  # Load interpolated state directly into model
+        # assign_state_to_model(model, state_interp)
         model = model.to(DEVICE)
         model.eval()
         
@@ -151,6 +173,95 @@ def compute_lmc_barrier(
     
     return barrier, losses
 
+def _worker_initializer(verbose: bool):
+    global logger
+    worker_id = f"worker-{os.getpid()}"
+    logger = get_logger(
+            level=logging.DEBUG if verbose else logging.INFO,
+            add_file_handler=True,
+            log_file=f"phase4_loss_landscape_{worker_id}.log"
+        )
+    logger.propagate = False
+    
+def _compute_pairwise_lmc_barriers(
+    ingredient_states, 
+    cfg, 
+    dataloader, 
+    base_idx,
+    be_keys,
+    cls_keys,
+    reg_keys,
+    shared_keys
+):
+    
+
+    os.sched_setaffinity(0, CORE_GROUPS[base_idx % len(CORE_GROUPS)])
+    torch.set_num_threads(1)
+
+    pair_idx = 0
+    results = {}
+    base = ingredient_states[base_idx]
+    base_be = extract_subdict(base, be_keys)
+    base_cls = extract_subdict(base, cls_keys)
+    base_reg = extract_subdict(base, reg_keys)
+    base_shared = extract_subdict(base, shared_keys)
+    for i in range(len(ingredient_states)):
+        for j in range(i + 1, len(ingredient_states)):
+            pair_name = f"pair_{i:02d}{j:02d}"
+            filepath = f"{RESULTS_DIR}/lmc_barriers/base{base_idx}_pair{pair_name}.json"
+            if os.path.exists(filepath):
+                logger.info("  [SKIP] Base [%d], Pair [%d/15] %s already exists", base_idx + 1, pair_idx + 1, pair_name)
+                pair_idx += 1
+                continue
+            logger.info("  Base: [%d/%d], Pair [%d/15] %s (ingredients %d vs %d)", base_idx + 1, len(ingredient_states), pair_idx + 1, pair_name, i, j)
+            
+            state_i = ingredient_states[i]
+            state_j = ingredient_states[j]
+            
+            # Compute barriers for each component
+            be_i = extract_subdict(state_i, be_keys)
+            be_j = extract_subdict(state_j, be_keys)
+            barrier_be, _ = compute_lmc_barrier(be_i, be_j, cfg, dataloader, [base_cls, base_reg, base_shared])
+            
+            cls_i = extract_subdict(state_i, cls_keys)
+            cls_j = extract_subdict(state_j, cls_keys)
+            barrier_cls, _ = compute_lmc_barrier(cls_i, cls_j, cfg, dataloader, [base_be, base_reg, base_shared])
+
+            reg_i = extract_subdict(state_i, reg_keys)
+            reg_j = extract_subdict(state_j, reg_keys)
+            barrier_reg, _ = compute_lmc_barrier(reg_i, reg_j, cfg, dataloader, [base_be, base_cls, base_shared])
+            
+            shared_i = extract_subdict(state_i, shared_keys)
+            shared_j = extract_subdict(state_j, shared_keys)
+            barrier_shared, _ = compute_lmc_barrier(shared_i, shared_j, cfg, dataloader, [base_be, base_cls, base_reg])
+            
+            # Full model barrier
+            barrier_full, _ = compute_lmc_barrier(state_i, state_j, cfg, dataloader)
+            
+            pair = {
+                "backbone_encoder": float(barrier_be),
+                "cls_head": float(barrier_cls),
+                "reg_head": float(barrier_reg),
+                "shared": float(barrier_shared),
+                "full_model": float(barrier_full),
+            }
+            results[base_idx] = {
+                pair_name: pair
+            }
+
+            filepath = f"{RESULTS_DIR}/lmc_barriers/base{base_idx}_pair{pair_name}.json"
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            with open(filepath, "w") as f:
+                json.dump(results, f, indent=4)
+            
+            pair_idx += 1
+
+    filepath = f"{RESULTS_DIR}/lmc_barriers/base{base_idx}.json"
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    with open(filepath, "w") as f:
+        json.dump(results, f, indent=4)
+
+    return base_idx, results
 
 def compute_pairwise_lmc_barriers(
     ingredient_states: List[Dict[str, torch.Tensor]],
@@ -174,47 +285,33 @@ def compute_pairwise_lmc_barriers(
     cls_keys, reg_keys, shared_keys = split_decoder_subheads(decoder_keys)
     be_keys = get_backbone_encoder_keys(ingredient_states[0])
     
+    # results = {}
+
+    ctx = mp.get_context("spawn")
+    all_processes = []
+    for base_idx in range(len(ingredient_states)):
+        processes = []
+        if base_idx % 6 == 0:
+            all_processes.append(tuple(processes))
+            processes = [(ingredient_states, cfg, dataloader, base_idx, be_keys, cls_keys, reg_keys, shared_keys)]
+        else:
+            processes.append((ingredient_states, cfg, dataloader, base_idx, be_keys, cls_keys, reg_keys, shared_keys))
+
+    all_outputs = []
+    for jobs in all_processes:
+        with ctx.Pool(processes=len(jobs), initializer=_worker_initializer, initargs=(parsed_args.verbose,)) as pool:
+            # jobs = [
+            #     (ingredient_states, cfg, dataloader, x, be_keys, cls_keys, reg_keys, shared_keys)
+            #     for x in range(len(ingredient_states))
+            # ]
+            outputs = pool.starmap(_compute_pairwise_lmc_barriers, jobs)
+            all_outputs.extend(outputs)
+
+    # Collect results in parent — keyed by x (ingredient index)
     results = {}
-    pair_idx = 0
-    
-    for i in range(len(ingredient_states)):
-        for j in range(i + 1, len(ingredient_states)):
-            pair_name = f"pair_{i:02d}{j:02d}"
-            logger.info("  [%d/15] %s (ingredients %d vs %d)", pair_idx + 1, pair_name, i, j)
-            
-            state_i = ingredient_states[i]
-            state_j = ingredient_states[j]
-            
-            # Compute barriers for each component
-            be_i = extract_subdict(state_i, be_keys)
-            be_j = extract_subdict(state_j, be_keys)
-            barrier_be, _ = compute_lmc_barrier(be_i, be_j, cfg, dataloader)
-            
-            cls_i = extract_subdict(state_i, cls_keys)
-            cls_j = extract_subdict(state_j, cls_keys)
-            barrier_cls, _ = compute_lmc_barrier(cls_i, cls_j, cfg, dataloader)
-            
-            reg_i = extract_subdict(state_i, reg_keys)
-            reg_j = extract_subdict(state_j, reg_keys)
-            barrier_reg, _ = compute_lmc_barrier(reg_i, reg_j, cfg, dataloader)
-            
-            shared_i = extract_subdict(state_i, shared_keys)
-            shared_j = extract_subdict(state_j, shared_keys)
-            barrier_shared, _ = compute_lmc_barrier(shared_i, shared_j, cfg, dataloader)
-            
-            # Full model barrier
-            barrier_full, _ = compute_lmc_barrier(state_i, state_j, cfg, dataloader)
-            
-            results[pair_name] = {
-                "backbone_encoder": float(barrier_be),
-                "cls_head": float(barrier_cls),
-                "reg_head": float(barrier_reg),
-                "shared": float(barrier_shared),
-                "full_model": float(barrier_full),
-            }
-            
-            pair_idx += 1
-    
+    for model_idx, result in all_outputs:
+        results[model_idx] = result
+
     logger.info("  ✓ LMC barrier computation complete")
     return results
 
@@ -649,20 +746,22 @@ def run(verbose: bool = True) -> Dict[str, Any]:
         # Build Detectron2 config
         logger.info("\n[2/4] Building Detectron2 config...")
         cfgs = [build_eval_cfg(EVAL_DATASET, str(cfg_path), ckpt_file) for cfg_path, ckpt_file in zip(cfg_paths, ingredient_paths)]
+        base_cfg = build_eval_cfg(EVAL_DATASET)
         logger.info("  ✓ Config ready")
         
         # Build evaluation dataloader
         logger.info("\n[3/4] Building evaluation dataloader...")
-        dataloader = build_eval_dataloader(cfgs[0], EVAL_DATASET)
+        dataloader = build_eval_dataloader(cfgs[0], EVAL_DATASET, num_workers=0, batch_size=4, max_img_per_cls=3)
         logger.info("  ✓ Dataloader ready")
         
         # Compute pairwise LMC barriers
         logger.info("\n[4/4a] Computing pairwise LMC barriers (15 pairs)...")
-        # lmc_barriers = compute_pairwise_lmc_barriers(ingredient_states, cfg, dataloader)
-        barriers_json = results_dir / "phase4_lmc_barriers.json"
-        with open(barriers_json, "r") as f:
-            lmc_barriers = json.load(f)
+        lmc_barriers = compute_pairwise_lmc_barriers(ingredient_states, base_cfg, dataloader)
+        # barriers_json = results_dir / "phase4_lmc_barriers.json"
+        # with open(barriers_json, "r") as f:
+        #     lmc_barriers = json.load(f)
         
+        dataloader = build_eval_dataloader(cfgs[0], EVAL_DATASET)
         # Compute Hessian traces
         logger.info("\n[4/4b] Computing Hessian traces for 6 ingredients...")
         hessian_traces = compute_hessian_traces(ingredient_states, cfgs, dataloader)
@@ -714,6 +813,7 @@ if __name__ == "__main__":
     args.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parsed_args = args.parse_args()
 
-    run(verbose=parsed_args.verbose)
+    # run(verbose=parsed_args.verbose)
+    run(verbose=True)
 
 # loss_landscape

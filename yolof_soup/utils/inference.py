@@ -8,7 +8,7 @@ from detectron2.checkpoint import DetectionCheckpointer
 
 
 class EvaluateModel():
-    def __init__(self, cfg):
+    def __init__(self, cfg, state_dict: Dict[str, torch.Tensor]=None):
         self.cfg = cfg.clone()  # cfg can be modified by model
         self.model = build_model(self.cfg)
         self.model.eval()
@@ -16,28 +16,35 @@ class EvaluateModel():
             self.metadata = MetadataCatalog.get(cfg.DATASETS.TEST[0])
 
         checkpointer = DetectionCheckpointer(self.model)
-        checkpointer.load(cfg.MODEL.WEIGHTS)
+        if state_dict is not None:
+            incompatible = checkpointer._load_model({"model": state_dict})
+            if (
+                incompatible is not None
+            ):  # handle some existing subclasses that returns None
+                checkpointer._log_incompatible_keys(incompatible)
+        else:
+            checkpointer.load(cfg.MODEL.WEIGHTS)
 
         self.input_format = cfg.INPUT.FORMAT
         assert self.input_format in ["RGB", "BGR"], self.input_format
 
-    def _predict(self, original_image):
-        return self.model([original_image])[0]
+    def _predict(self, original_image, return_val_loss=False):
+        return self.model([original_image], return_val_loss=return_val_loss)[0]
     
-    def predict(self, original_images):
+    def predict(self, original_images, return_val_loss=False):
         predictions = []
         for original_image in original_images:
-            predictions.append(self._predict(original_image))
+            predictions.append(self._predict(original_image, return_val_loss=return_val_loss))
         
         return predictions
     
-    def __call__(self, original_images, require_grad=False):
+    def __call__(self, original_images, require_grad=False, return_val_loss=False):
         if require_grad:
             with torch.enable_grad():
-                return self.predict(original_images)
+                return self.predict(original_images, return_val_loss=return_val_loss)
         else:
             with torch.no_grad(): 
-                return self.predict(original_images)
+                return self.predict(original_images, return_val_loss=return_val_loss)
     
     def eval(self):
         # Override eval to ensure model is in eval mode and no dropout/batchnorm updates occur.

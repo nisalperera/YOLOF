@@ -18,24 +18,47 @@ Wraps:
 
 from __future__ import annotations
 
-import logging
+from collections import defaultdict
+import random
 from pathlib import Path
 from typing import Dict, Optional
 
 import torch
-from detectron2.data import DatasetCatalog, build_detection_test_loader, build_detection_train_loader
+from detectron2.data import DatasetCatalog, build_detection_train_loader
 from detectron2.evaluation import inference_on_dataset
 
 from yolof.analysis.mode_connectivity import evaluate_loss_on_dataset
 from yolof.data import YOLOFDatasetMapper
 from yolof.data.samplers import EvenlyDistributedInferenceSampler
+from yolof.data.build import build_detection_test_loader
 from yolof.evaluation.coco_ar_ap import COCOEvaluatorWithAPandAR
 from yolof_soup.utils.global_logger import get_logger
 
 logger = get_logger()
 
 
-def build_eval_dataloader(cfg, dataset_name: Optional[str] = None):
+def _subset_data(dataset, max_img_per_cls):
+    annotations = [(i, obj["annotations"]) for i, obj in enumerate(dataset)]
+
+    selected_classes = defaultdict(list)
+    for i, annots in annotations:
+        image_obj = dataset[i]
+        for annot in annots:
+            selected_classes[annot["category_id"]].append(image_obj)
+
+    new_eval_dataset = []
+    dataset_cls_counts = defaultdict(int)
+    for cls_id, image_objs in selected_classes.items():
+        for idx in random.sample(range(len(image_objs)), min(max_img_per_cls, len(image_objs))):
+            # new_eval_dataset[cls_id] = image_objs[idx]
+            new_eval_dataset.append(image_objs[idx])
+            dataset_cls_counts[cls_id] += 1
+
+    logger.info("Selected %d images for evaluation (max %d per class)", len(new_eval_dataset), max_img_per_cls)
+    return new_eval_dataset
+
+
+def build_eval_dataloader(cfg, dataset_name: Optional[str] = None, num_workers: int = None, batch_size: int = 1, max_img_per_cls: Optional[int] = None):
     """
     Build a Detectron2 test DataLoader using YOLOFDatasetMapper.
 
@@ -46,10 +69,15 @@ def build_eval_dataloader(cfg, dataset_name: Optional[str] = None):
     Returns:
         DataLoader compatible with both compute_coco_map and quick_loss.
     """
-    name    = dataset_name or cfg.DATASETS.TEST[0]
+    dataset = DatasetCatalog.get(dataset_name or cfg.DATASETS.TEST[0])
+    if max_img_per_cls is not None:
+        dataset = _subset_data(dataset, max_img_per_cls)
+
     mapper  = YOLOFDatasetMapper(cfg, is_train=False)
-    sampler = EvenlyDistributedInferenceSampler(len(DatasetCatalog.get(name)))
-    return build_detection_test_loader(cfg, name, mapper=mapper, sampler=sampler)
+    sampler = EvenlyDistributedInferenceSampler(len(dataset))
+    if num_workers is None:
+        num_workers = 0
+    return build_detection_test_loader(cfg, dataset=dataset, mapper=mapper, sampler=sampler, num_workers=num_workers, batch_size=batch_size)
 
 
 def build_train_dataloader(cfg, dataset_name: Optional[str] = None, batch_size=8):
