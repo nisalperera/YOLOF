@@ -322,6 +322,23 @@ class GPUMemoryMonitor:
         
         return latest
     
+    def get_latest_memory_usage(self):
+        """
+        Get the latest GPU memory usage in percentage.
+        
+        Returns:
+            List of memory usage for each GPU or None if stats are unavailable
+        """
+        stats = self.get_latest_stats()
+        if stats is None:
+            return []
+        if "error" in stats:
+            return None
+        
+        return [
+            gpu["memory_used_percent"] for gpu in stats.get("gpus", [])
+        ]
+    
     def is_running(self) -> bool:
         """Check if the monitor is currently running."""
         return self._thread is not None and self._thread.is_alive()
@@ -434,6 +451,7 @@ Examples:
         else:
             print("GPU Memory Monitor running. Press Ctrl+C to stop.")
             while monitor.is_running():
+                print(monitor.get_latest_stats())
                 time.sleep(1)
     
     except KeyboardInterrupt:

@@ -139,22 +139,34 @@ def get_map(
 
 def extract_per_class_ap(
     results_dict: Dict[str, float],
-    categories: list[str] = [],
+    categories: list[str | dict] = [],
 ) -> list[float]:
     """
-    Extract per-class AP values from COCO evaluator results dict.
+    Extract per-class AP and AR values from COCO evaluator results dict.
     
     The evaluator stores results as "AP-{class_id}" for each of 80 COCO classes.
     This function extracts them in order (0-79) and returns as a list.
     
     Args:
         results_dict: Dict returned from compute_coco_map() containing AP values
-        n_classes: Number of COCO classes (default 80)
+        categories: Categories the dataset includes. This could be a list of class names or 
+            dicts with "id" and "name" keys. If empty, defaults to COCO classes.
     
     Returns:
         List of float AP values, one per class (indices 0-79)
         Missing classes are filled with 0.0
     """
+
+    if not isinstance(categories, list):
+        logger.warning("Unsuported categories format.")
+        raise ValueError(f"Unsuported categories format. Expected a 'list'. Got '{type(categories)}' instead.")
+
+    if isinstance(categories[0], dict):
+        if "id" in categories[0] and "name" in categories[0]:
+            categories = [cat["name"] for cat in categories]
+        else:
+            logger.warning("Unsuported categories format.")
+            raise ValueError(f"Unsuported categories format. Expected [{'id': 1, 'name': 'category name'}, ...] format. Got {categories[0]} instead.")
     if not len(categories):
         categories = [
                 "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
@@ -168,28 +180,46 @@ def extract_per_class_ap(
             ]
         
     per_class_ap = []
-    for class_idx in range(len(categories)):
-        # Try to find AP-{class_idx} key
-        key = f"AP-{class_idx}"
-        ap_val = results_dict.get(key, 0.0)
-        per_class_ap.append(float(ap_val))
-    
-    # If no AP-{class_idx} keys found, try AP-{class_name} keys
-    if all(ap == 0.0 for ap in per_class_ap):
-        # Build list from class names if available
-        logger.debug("No AP-{class_idx} keys found in results; trying AP-{class_name} keys")
-        try:
-            # Try to get COCO class names
-            # This assumes the dataset is registered with Detectron2
-            # For COCO, class names are stored in MetadataCatalog
-            for class_idx, class_name in enumerate(categories):
-                key = f"AP-{class_name}"
-                ap_val = results_dict.get(key, 0.0)
-                per_class_ap[class_idx] = float(ap_val)
-        except Exception as e:
-            logger.warning("Failed to extract per-class AP from results: %s", str(e))
-    
-    return per_class_ap
+    try:
+        for class_idx in range(len(categories)):
+            # Try to find AP-{class_idx} key
+            ap_key = f"AP-{class_idx}"
+            ap_val = results_dict.get(ap_key, 0.0)
+
+            ar_key = f"AR-{class_idx}"
+            ar_val = results_dict.get(ar_key, 0.0)
+                
+            # If no AP-{class_idx} keys found, try AP-{class_name} keys
+            if ap_val == 0.0:
+                # Build list from class names if available
+                # Try to get COCO class names
+                # This assumes the dataset is registered with Detectron2
+                # For COCO, class names are stored in MetadataCatalog
+                class_name = categories[class_idx] if class_idx < len(categories) else f"class_{class_idx}"
+                logger.debug(f"No AP-{class_idx} key found in results; trying AP-{class_name} key")
+                ap_key = f"AP-{class_name}"
+                ap_val = results_dict.get(ap_key, 0.0)
+                
+                # if len(per_class_ap) > class_idx:
+                    # per_class_ap[class_idx].append(float(ar_val))
+                # else:
+                per_class_ap.append([class_name, float(ap_val)])
+
+            if ar_val == 0.0:
+                class_name = categories[class_idx] if class_idx < len(categories) else f"class_{class_idx}"
+                logger.debug(f"No AP-{class_idx} key found in results; trying AP-{class_name} key")
+                ar_key = f"AR-{class_name}"
+                ar_val = results_dict.get(ar_key, 0.0)
+
+                per_class_ap[class_idx].append(float(ar_val))
+
+            else:
+                per_class_ap.append([class_idx, float(ap_val), float(ar_val)])
+        
+        return per_class_ap
+    except Exception as e:
+        logger.error("Error extracting per-class AP: %s", str(e))
+        return []
 
 
 def quick_loss(
