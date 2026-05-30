@@ -28,23 +28,23 @@ class EvaluateModel():
         self.input_format = cfg.INPUT.FORMAT
         assert self.input_format in ["RGB", "BGR"], self.input_format
 
-    def _predict(self, original_image, return_val_loss=False):
-        return self.model([original_image], return_val_loss=return_val_loss)[0]
+    def _predict(self, original_image, return_val_loss, beta):
+        return self.model([original_image], return_val_loss=return_val_loss, beta=beta)[0]
     
-    def predict(self, original_images, return_val_loss=False):
+    def predict(self, original_images, return_val_loss, beta):
         predictions = []
         for original_image in original_images:
-            predictions.append(self._predict(original_image, return_val_loss=return_val_loss))
+            predictions.append(self._predict(original_image, return_val_loss=return_val_loss, beta=beta))
         
         return predictions
     
-    def __call__(self, original_images, require_grad=False, return_val_loss=False):
+    def __call__(self, original_images, require_grad=False, return_val_loss=False, beta=torch.Tensor([1.0])):
         if require_grad:
             with torch.enable_grad():
-                return self.predict(original_images, return_val_loss=return_val_loss)
+                return self.predict(original_images, return_val_loss=return_val_loss, beta=beta)
         else:
             with torch.no_grad(): 
-                return self.predict(original_images, return_val_loss=return_val_loss)
+                return self.predict(original_images, return_val_loss=return_val_loss, beta=beta)
     
     def eval(self):
         # Override eval to ensure model is in eval mode and no dropout/batchnorm updates occur.

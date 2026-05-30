@@ -14,7 +14,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from yolof.utils import _format_duration
+from yolof.utils.utils import _format_duration
 from yolof_soup.utils.logging_utils import setup_logging
 
 logger = setup_logging(level=logging.INFO, filename="mode_connectivity.log", use_stdout=True)

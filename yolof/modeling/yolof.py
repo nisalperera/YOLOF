@@ -258,7 +258,7 @@ class YOLOF(nn.Module):
                    f"Bottom: {max_boxes} Highest Scoring Results"
         storage.put_image(vis_name, vis_img)
 
-    def forward(self, batched_inputs: Tuple[Dict[str, Tensor]], return_val_loss: bool=False, beta: float=1.0):
+    def forward(self, batched_inputs: Tuple[Dict[str, Tensor]], return_val_loss: bool=False, beta=1.0):
         """
         Args:
             batched_inputs: a list, batched outputs of :class:`DatasetMapper` .
@@ -278,6 +278,12 @@ class YOLOF(nn.Module):
             in inference, the standard output format, described in
             :doc:`/tutorials/models`.
         """
+
+        if not isinstance(beta, Tensor):
+            beta = torch.tensor([beta], device=self.device)
+        else:
+            beta = beta.to(self.device)
+
         num_images = len(batched_inputs)
         images = self.preprocess_image(batched_inputs)
         features = self.backbone(images.tensor)
@@ -301,8 +307,13 @@ class YOLOF(nn.Module):
             indices = self.get_ground_truth(
                 anchors, pred_anchor_deltas, gt_instances)
             losses = self.losses(
-                indices, gt_instances, anchors,
-                pred_logits, pred_anchor_deltas)
+                indices, 
+                gt_instances, 
+                anchors,
+                pred_logits, 
+                pred_anchor_deltas,
+                beta=beta
+            )
 
             if self.vis_period > 0:
                 storage = get_event_storage()
@@ -349,7 +360,7 @@ class YOLOF(nn.Module):
                 width = input_per_image.get("width", image_size[1])
                 r = detector_postprocess(results_per_image, height, width)
 
-                if self.return_val_loss:
+                if self.return_val_loss or return_val_loss:
                     processed_results.append({
                         "instances": r, 
                         "losses": losses,  # Include losses for logging
@@ -365,7 +376,7 @@ class YOLOF(nn.Module):
                anchors,
                pred_class_logits,
                pred_anchor_deltas,
-               beta: float=1.0):
+               beta):
         
         pred_class_logits = cat(
             pred_class_logits, dim=1).view(-1, self.num_classes)
