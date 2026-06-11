@@ -19,6 +19,7 @@ Wraps:
 from __future__ import annotations
 
 from collections import defaultdict
+import logging
 import random
 from pathlib import Path
 from typing import Dict, Optional
@@ -34,8 +35,8 @@ from yolof.data.build import build_detection_test_loader
 from yolof.evaluation.coco_ar_ap import COCOEvaluatorWithAPandAR
 from yolof_soup.utils.global_logger import get_logger
 
-logger = get_logger()
 
+logger = get_logger(logging.DEBUG, add_file_handler=True)
 
 def _subset_data(dataset, max_img_per_cls):
     annotations = [(i, obj["annotations"]) for i, obj in enumerate(dataset)]
@@ -119,7 +120,7 @@ def compute_coco_map(
 
     model.eval()
     results = inference_on_dataset(model, loader, evaluator)
-    bbox    = results.get("bbox", {})
+    bbox = results.get("bbox", {})
     logger.info("[compute_coco_map] tag=%-28s  AP=%.4f", tag, bbox.get("AP", float("nan")))
     return bbox
 

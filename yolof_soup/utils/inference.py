@@ -17,7 +17,10 @@ class EvaluateModel():
 
         checkpointer = DetectionCheckpointer(self.model)
         if state_dict is not None:
-            incompatible = checkpointer._load_model({"model": state_dict})
+            if "model" not in state_dict:
+                incompatible = checkpointer._load_model({"model": state_dict})
+            else:
+                incompatible = checkpointer._load_model(state_dict)
             if (
                 incompatible is not None
             ):  # handle some existing subclasses that returns None

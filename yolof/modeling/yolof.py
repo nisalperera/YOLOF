@@ -311,8 +311,7 @@ class YOLOF(nn.Module):
                 gt_instances, 
                 anchors,
                 pred_logits, 
-                pred_anchor_deltas,
-                beta=beta
+                pred_anchor_deltas
             )
 
             if self.vis_period > 0:
@@ -340,7 +339,7 @@ class YOLOF(nn.Module):
 
                 indices = self.get_ground_truth(anchors, pred_anchor_deltas, gt_instances)
                 losses = self.losses(
-                    indices, gt_instances, anchors, pred_logits, pred_anchor_deltas, beta
+                    indices, gt_instances, anchors, pred_logits, pred_anchor_deltas
                 )
 
             results = self.inference(
@@ -375,8 +374,7 @@ class YOLOF(nn.Module):
                gt_instances,
                anchors,
                pred_class_logits,
-               pred_anchor_deltas,
-               beta):
+               pred_anchor_deltas):
         
         pred_class_logits = cat(
             pred_class_logits, dim=1).view(-1, self.num_classes)
@@ -450,7 +448,7 @@ class YOLOF(nn.Module):
         # Scale logits by β before computing the focal loss.
         # β > 1 sharpens predictions (more confident); β < 1 smooths them.
         # β = 1.0 is the identity — no effect on standard training.
-        scaled_logits = pred_class_logits * beta
+        scaled_logits = pred_class_logits
 
         # cls loss
         loss_cls = sigmoid_focal_loss_jit(

@@ -23,7 +23,7 @@ from scipy import stats
 
 from yolof_soup.utils.global_logger import get_logger
 
-logger = get_logger()
+logger = get_logger(logging.DEBUG, add_file_handler=True)
 
 
 # ── RQ1/H1 ───────────────────────────────────────────────

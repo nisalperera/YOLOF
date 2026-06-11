@@ -40,10 +40,10 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from yolof_soup.utils.global_logger import get_logger, configure_logger
+from yolof_soup.utils.global_logger import get_logger
 
-logger = get_logger()
 
+logger = get_logger(logging.DEBUG, add_file_handler=True)
 
 def run_phase_2b(
     phase2_output_dir: str | Path,

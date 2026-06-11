@@ -49,6 +49,7 @@ from yolof_soup.config.experiment_config import (
     EVAL_DATASET,
     RESULTS_DIR,
     build_eval_cfg,
+    _register_datasets,
 )
 from yolof_soup.config.experiment_registry import get_run_specs
 from yolof_soup.utils.checkpoint_utils import load_states
@@ -1342,6 +1343,7 @@ if __name__ == "__main__":
     )
     parsed_args = args.parse_args()
 
+    _register_datasets()
     # run(verbose=parsed_args.verbose)
     run(verbose=True, force_recompute=parsed_args.force)
 
