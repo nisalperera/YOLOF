@@ -148,7 +148,6 @@ class YOLOF(nn.Module):
         # Loss parameters:
         self.focal_loss_alpha = focal_loss_alpha
         self.focal_loss_gamma = focal_loss_gamma
-        # print(sys.modules[__name__])
         assert box_reg_loss_type in ["smooth_l1", "giou", "diou", "ciou"], \
             f"Unsupported box regression loss type: {box_reg_loss_type}"
         self.box_reg_loss = getattr(sys.modules[__name__], box_reg_loss_type + "_loss")  # e.g., "giou_loss", "smooth_l1_loss"
@@ -259,7 +258,7 @@ class YOLOF(nn.Module):
                    f"Bottom: {max_boxes} Highest Scoring Results"
         storage.put_image(vis_name, vis_img)
 
-    def forward(self, batched_inputs: Tuple[Dict[str, Tensor]], return_val_loss=False):
+    def forward(self, batched_inputs: Tuple[Dict[str, Tensor]], return_val_loss: bool=False, beta=1.0):
         """
         Args:
             batched_inputs: a list, batched outputs of :class:`DatasetMapper` .
@@ -279,6 +278,12 @@ class YOLOF(nn.Module):
             in inference, the standard output format, described in
             :doc:`/tutorials/models`.
         """
+
+        if not isinstance(beta, Tensor):
+            beta = torch.tensor([beta], device=self.device)
+        else:
+            beta = beta.to(self.device)
+
         num_images = len(batched_inputs)
         images = self.preprocess_image(batched_inputs)
         features = self.backbone(images.tensor)
@@ -290,9 +295,6 @@ class YOLOF(nn.Module):
             self.encoder(features[0]))
         # Transpose the Hi*Wi*A dimension to the middle:
         pred_logits = [permute_to_N_HWA_K(pred_logits, self.num_classes)]
-        # print(f"logit min:  {pred_logits[0].min().item():.3f}")
-        # print(f"logit max:  {pred_logits[0].max().item():.3f}")
-        # print(f"logit mean: {pred_logits[0].mean().item():.3f}")
         pred_anchor_deltas = [permute_to_N_HWA_K(pred_anchor_deltas, 4)]
 
         if self.training:
@@ -305,8 +307,12 @@ class YOLOF(nn.Module):
             indices = self.get_ground_truth(
                 anchors, pred_anchor_deltas, gt_instances)
             losses = self.losses(
-                indices, gt_instances, anchors,
-                pred_logits, pred_anchor_deltas)
+                indices, 
+                gt_instances, 
+                anchors,
+                pred_logits, 
+                pred_anchor_deltas
+            )
 
             if self.vis_period > 0:
                 storage = get_event_storage()
@@ -353,7 +359,7 @@ class YOLOF(nn.Module):
                 width = input_per_image.get("width", image_size[1])
                 r = detector_postprocess(results_per_image, height, width)
 
-                if self.return_val_loss:
+                if self.return_val_loss or return_val_loss:
                     processed_results.append({
                         "instances": r, 
                         "losses": losses,  # Include losses for logging
@@ -438,9 +444,15 @@ class YOLOF(nn.Module):
             dist.all_reduce(num_foreground)
         num_foreground = num_foreground * 1.0 / comm.get_world_size()
 
+        # ── Temperature scaling ───────────────────────────────────────────────
+        # Scale logits by β before computing the focal loss.
+        # β > 1 sharpens predictions (more confident); β < 1 smooths them.
+        # β = 1.0 is the identity — no effect on standard training.
+        scaled_logits = pred_class_logits
+
         # cls loss
         loss_cls = sigmoid_focal_loss_jit(
-            pred_class_logits[valid_idxs],
+            scaled_logits[valid_idxs],
             gt_classes_target[valid_idxs],
             alpha=self.focal_loss_alpha,
             gamma=self.focal_loss_gamma,

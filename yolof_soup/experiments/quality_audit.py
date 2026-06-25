@@ -33,7 +33,8 @@ from yolof_soup.utils.eval_utils import compute_coco_map, extract_per_class_ap
 from yolof_soup.utils.inference import EvaluateModel
 from yolof_soup.utils.global_logger import get_logger
 
-logger = get_logger()
+
+logger = get_logger(logging.DEBUG, add_file_handler=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Ingredient Audit: Load, Evaluate, Report

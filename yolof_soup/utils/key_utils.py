@@ -12,6 +12,7 @@ Decoder sub-head patterns match yolof/modeling/decoder/ attribute names.
 
 from __future__ import annotations
 
+import logging
 from typing import Dict, List, Tuple
 
 import torch
@@ -21,7 +22,7 @@ from yolof.analysis.model_soup import _is_backbone_encoder
 from yolof_soup.utils.inference import BNCalibration
 from yolof_soup.utils.global_logger import get_logger
 
-logger = get_logger()
+logger = get_logger(logging.DEBUG, add_file_handler=True)
 
 _CLS_PATTERNS: Tuple[str, ...] = (
     "cls_subnet", "cls_score", "cls_pred", "classification",

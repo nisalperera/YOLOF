@@ -30,6 +30,7 @@ from typing import Optional
 # # Global logger instance
 # _global_logger: Optional[logging.Logger] = None
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+LOGGER_LEVEL = logging.DEBUG
 
 def get_logger(
     level: int = logging.INFO,
@@ -65,7 +66,7 @@ def get_logger(
     
     # Create formatter
     formatter = logging.Formatter(
-        "%(asctime)s | %(levelname)-8s | %(name)-20s | %(funcName)-35s | %(message)s",
+        "%(asctime)s | %(levelname)-8s | %(name)-20s | %(processName)-14s (PID: %(process)d) | %(funcName)-35s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S"
     )
     

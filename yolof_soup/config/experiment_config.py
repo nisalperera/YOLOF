@@ -41,8 +41,8 @@ except ImportError:
 from yolof.config import get_cfg
 from yolof_soup.utils.global_logger import get_logger
 
-logger = get_logger()
 
+logger = get_logger(logging.DEBUG, add_file_handler=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1.  Environment / Hardware
@@ -80,7 +80,7 @@ RESULTS_DIR:    Path = PROJECT_ROOT / "results"
 LOG_DIR:        Path = PROJECT_ROOT / "logs"
 
 # Output directories per training phase
-PHASE2_OUTPUT_DIR: Path = CHECKPOINT_DIR / "soup_exps/ingridients"
+PHASE2_OUTPUT_DIR: Path = CHECKPOINT_DIR / "soup_exps/ingridients-refined"
 
 # Ensure key directories exist at import time
 for _d in (CHECKPOINT_DIR, RESULTS_DIR, LOG_DIR, PHASE2_OUTPUT_DIR):
@@ -175,8 +175,6 @@ def _register_datasets() -> None:
                 )
 
     # logger.info(f"Registered Custom Datasets: \n\t{[_name for _name in _splits if _name in DatasetCatalog.list()]}")
-
-_register_datasets()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -55,13 +55,13 @@ from tabulate import tabulate
 from detectron2.config import CfgNode
 from detectron2.data import MetadataCatalog
 
-from yolof.utils import format_duration
+from yolof.utils import _format_duration
 from yolof_soup.config.experiment_config import (
     CHECKPOINT_DIR,
     DEVICE,
     RESULTS_DIR,
     PHASE2_OUTPUT_DIR,
-    register_datasets,
+    _register_datasets,
     build_eval_cfg,
 )
 from yolof_soup.config.experiment_registry import get_run_specs
@@ -78,6 +78,8 @@ from yolof_soup.utils.key_utils import (
 )
 from yolof_soup.utils.state_dict_utils import assign_state_to_model
 from yolof_soup.utils.global_logger import get_logger
+
+from yolof_soup.experiments.greedy_be_tri_head import build_greedy_tri_head_learned_soup
 
 logger: logging.Logger = None  # type: ignore[assignment]
 
@@ -103,7 +105,6 @@ def _is_obj_head_key(key: str) -> bool:
 
 
 def _partition_decoder_keys(
-    state: Dict[str, torch.Tensor],
     decoder_keys: List[str],
 ) -> Tuple[List[str], List[str], List[str], List[str]]:
     """
@@ -165,12 +166,12 @@ def _evaluate_state(
     tag: str,
 ) -> float:
     """Load state into a fresh model, evaluate on *dataset*, return mAP@[.5:.95]."""
-    register_datasets()
+    _register_datasets()
     model = EvaluateModel(cfg, state_dict=state)
     model.to(DEVICE)
     model.eval()
     try:
-        mAP = get_map(model, cfg, dataset)
+        mAP = get_map(model.model, cfg, dataset)
         logger.debug("  [eval %s] mAP = %.4f", tag, mAP)
         return mAP
     finally:
@@ -249,7 +250,7 @@ def _greedy_selection(
     n_accepted = 1
     for idx in range(1, len(sorted_scope_dicts)):
         candidate_scope = _uniform_avg(soup_scope, sorted_scope_dicts[idx])
-        candidate_full  = _splice(best_full_state, candidate_scope)
+        candidate_full = _splice(best_full_state, candidate_scope)
 
         mAP = _evaluate_state_full(
             candidate_full, cfg, selection_dataset,
@@ -257,10 +258,10 @@ def _greedy_selection(
         )
 
         if mAP >= best_map:
-            soup_scope     = candidate_scope
+            soup_scope = candidate_scope
             best_full_state = candidate_full
-            best_map        = mAP
-            n_accepted     += 1
+            best_map = mAP
+            n_accepted += 1
             logger.info(
                 "  [%s] Step %d/%d — ACCEPT  mAP = %.4f  (soup now has %d ingredients)",
                 scope_tag, idx, len(sorted_scope_dicts) - 1, mAP, n_accepted,
@@ -463,18 +464,18 @@ def _greedy_pass_for_head(
 
     n_accepted = 1
     for idx in range(1, len(sorted_head_dicts)):
-        candidate_head  = _uniform_avg(soup_head, sorted_head_dicts[idx])
-        candidate_full  = _splice(best_full_state, candidate_head)
+        candidate_head = _uniform_avg(soup_head, sorted_head_dicts[idx])
+        candidate_full = _splice(best_full_state, candidate_head)
 
         mAP = _evaluate_state_full(
             candidate_full, cfg, selection_dataset, f"{tag}/step{idx}"
         )
 
         if mAP >= best_map:
-            soup_head       = candidate_head
+            soup_head = candidate_head
             best_full_state = candidate_full
-            best_map        = mAP
-            n_accepted     += 1
+            best_map = mAP
+            n_accepted += 1
             logger.info(
                 "  [%s] Step %d/%d — ACCEPT  mAP = %.4f  (soup has %d ingredients)",
                 tag, idx, len(sorted_head_dicts) - 1, mAP, n_accepted,
@@ -550,9 +551,7 @@ def build_GD_per_head(
 
     # ── Decoder key partition ──────────────────────────────────────────────────
     decoder_keys = get_decoder_keys(sorted_states[0])
-    cls_keys, bbox_keys, obj_keys, shared_keys = _partition_decoder_keys(
-        sorted_states[0], decoder_keys
-    )
+    cls_keys, bbox_keys, obj_keys, shared_keys = _partition_decoder_keys(decoder_keys)
     logger.info(
         "  Decoder key partition — cls: %d | bbox: %d | obj: %d | shared trunk: %d",
         len(cls_keys), len(bbox_keys), len(obj_keys), len(shared_keys),
@@ -642,7 +641,7 @@ def _evaluate_condition(
     dict with keys: mAP50_95, mAP50, AR100, per_class_ap
     """
     logger.info("Evaluating condition '%s' on eval split...", tag)
-    register_datasets()
+    _register_datasets()
     model = EvaluateModel(cfg, state_dict=state)
     model.to(DEVICE)
     model.eval()
@@ -651,9 +650,9 @@ def _evaluate_condition(
             model, cfg, eval_dataset,
             output_dir=Path(RESULTS_DIR) / "phase3_greedy_eval" / tag,
         )
-        mAP        = float(results_dict.get("AP",               0.0))
-        mAP50      = float(results_dict.get("AP50",             0.0))
-        ar100      = float(results_dict.get("AR@maxDets=100",   0.0))
+        mAP = float(results_dict.get("AP", 0.0))
+        mAP50 = float(results_dict.get("AP50", 0.0))
+        ar100 = float(results_dict.get("AR-maxDets=100", 0.0))
         per_class  = extract_per_class_ap(
             results_dict,
             MetadataCatalog.get(eval_dataset).thing_classes,
@@ -682,6 +681,7 @@ GREEDY_EXPERIMENTS: Dict[str, Any] = {
     "GA":          build_GA,
     "GB":          build_GB,
     "GD_PER_HEAD": build_GD_per_head,
+    "GD_BE_TRI_HEAD": build_greedy_tri_head_learned_soup,
 }
 
 
@@ -726,24 +726,31 @@ def run(
         raise ValueError(f"Unknown experiments: {unknown}. "
                          f"Valid: {list(GREEDY_EXPERIMENTS)}")
 
-    results_dir    = Path(RESULTS_DIR)
+    results_dir = Path(RESULTS_DIR)
     checkpoint_dir = Path(CHECKPOINT_DIR)
     results_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Load ingredients ──────────────────────────────────────────────────────
-    register_datasets()
+    _register_datasets()
     cfg = build_eval_cfg()
-    run_specs = get_run_specs()
+    run_registry = get_run_specs()
+    ingredient_runs = [r for r in run_registry if r.role == "ingredient"]
+    ingredients_dir = Path(PHASE2_OUTPUT_DIR)
+
+    ingredient_paths = []
+    for run_spec in ingredient_runs:
+        ckpt_path = Path(ingredients_dir) / f"{run_spec.run_name}/model_best.pth"
+        ingredient_paths.append(ckpt_path)
 
     logger.info("Loading ingredient checkpoints from %s ...", PHASE2_OUTPUT_DIR)
-    ingredient_states = load_states(Path(PHASE2_OUTPUT_DIR), run_specs)
+    ingredient_states = load_states(ingredient_paths)
     logger.info("  Loaded %d ingredients.", len(ingredient_states))
 
     # Determine selection + eval dataset names
     from yolof_soup.config.experiment_config import SELECTION_DATASET, EVAL_DATASET
     selection_dataset = SELECTION_DATASET
-    eval_dataset      = EVAL_DATASET
+    eval_dataset = EVAL_DATASET
 
     # ── Run experiments ───────────────────────────────────────────────────────
     all_results: Dict[str, Any] = {}
@@ -768,7 +775,7 @@ def run(
             soup_state = builder(ingredient_states, cfg, selection_dataset)
 
             logger.info("  Saving %s checkpoint → %s", exp_name, ckpt_path)
-            save_checkpoint(soup_state, str(ckpt_path))
+            save_checkpoint(str(ckpt_path), soup_state)
 
         # ── Evaluate ─────────────────────────────────────────────────────────
         metrics = _evaluate_condition(soup_state, cfg, eval_dataset, exp_name)
@@ -821,7 +828,7 @@ def run(
         )
     logger.info("Combined results saved to %s", combined_path)
     logger.info(
-        "Total elapsed: %s", format_duration(time.perf_counter() - start_time)
+        "Total elapsed: %s", _format_duration(time.perf_counter() - start_time)
     )
 
     return all_results

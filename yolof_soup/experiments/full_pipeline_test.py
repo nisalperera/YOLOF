@@ -53,7 +53,7 @@ from scipy import stats
 from yolof_soup.config.experiment_config import RESULTS_DIR
 from yolof_soup.utils.global_logger import get_logger
 
-logger = get_logger()
+logger = get_logger(logging.DEBUG, add_file_handler=True)
 
 # COCO class definitions for category grouping
 COCO_CLASSES = [

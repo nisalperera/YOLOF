@@ -18,24 +18,48 @@ Wraps:
 
 from __future__ import annotations
 
+from collections import defaultdict
 import logging
+import random
 from pathlib import Path
 from typing import Dict, Optional
 
 import torch
-from detectron2.data import DatasetCatalog, build_detection_test_loader, build_detection_train_loader
+from detectron2.data import DatasetCatalog, build_detection_train_loader
 from detectron2.evaluation import inference_on_dataset
 
 from yolof.analysis.mode_connectivity import evaluate_loss_on_dataset
 from yolof.data import YOLOFDatasetMapper
 from yolof.data.samplers import EvenlyDistributedInferenceSampler
+from yolof.data.build import build_detection_test_loader
 from yolof.evaluation.coco_ar_ap import COCOEvaluatorWithAPandAR
 from yolof_soup.utils.global_logger import get_logger
 
-logger = get_logger()
+
+logger = get_logger(logging.DEBUG, add_file_handler=True)
+
+def _subset_data(dataset, max_img_per_cls):
+    annotations = [(i, obj["annotations"]) for i, obj in enumerate(dataset)]
+
+    selected_classes = defaultdict(list)
+    for i, annots in annotations:
+        image_obj = dataset[i]
+        for annot in annots:
+            selected_classes[annot["category_id"]].append(image_obj)
+
+    new_eval_dataset = []
+    dataset_cls_counts = defaultdict(int)
+    for cls_id, image_objs in selected_classes.items():
+        for idx in random.sample(range(len(image_objs)), min(max_img_per_cls, len(image_objs))):
+            # new_eval_dataset[cls_id] = image_objs[idx]
+            new_eval_dataset.append(image_objs[idx])
+            dataset_cls_counts[cls_id] += 1
+
+    logger.info("Selected %d images for evaluation (max %d per class)", len(new_eval_dataset), max_img_per_cls)
+    return new_eval_dataset
 
 
-def build_eval_dataloader(cfg, dataset_name: Optional[str] = None):
+def build_eval_dataloader(cfg, dataset_name: Optional[str] = None, num_workers: int = None, batch_size: int = 1, max_img_per_cls: Optional[int] = None):
     """
     Build a Detectron2 test DataLoader using YOLOFDatasetMapper.
 
@@ -46,10 +70,15 @@ def build_eval_dataloader(cfg, dataset_name: Optional[str] = None):
     Returns:
         DataLoader compatible with both compute_coco_map and quick_loss.
     """
-    name    = dataset_name or cfg.DATASETS.TEST[0]
+    dataset = DatasetCatalog.get(dataset_name or cfg.DATASETS.TEST[0])
+    if max_img_per_cls is not None:
+        dataset = _subset_data(dataset, max_img_per_cls)
+
     mapper  = YOLOFDatasetMapper(cfg, is_train=False)
-    sampler = EvenlyDistributedInferenceSampler(len(DatasetCatalog.get(name)))
-    return build_detection_test_loader(cfg, name, mapper=mapper, sampler=sampler)
+    sampler = EvenlyDistributedInferenceSampler(len(dataset))
+    if num_workers is None:
+        num_workers = 0
+    return build_detection_test_loader(cfg, dataset=dataset, mapper=mapper, sampler=sampler, num_workers=num_workers, batch_size=batch_size)
 
 
 def build_train_dataloader(cfg, dataset_name: Optional[str] = None, batch_size=8):
@@ -91,7 +120,7 @@ def compute_coco_map(
 
     model.eval()
     results = inference_on_dataset(model, loader, evaluator)
-    bbox    = results.get("bbox", {})
+    bbox = results.get("bbox", {})
     logger.info("[compute_coco_map] tag=%-28s  AP=%.4f", tag, bbox.get("AP", float("nan")))
     return bbox
 
@@ -111,22 +140,34 @@ def get_map(
 
 def extract_per_class_ap(
     results_dict: Dict[str, float],
-    categories: list[str] = [],
+    categories: list[str | dict] = [],
 ) -> list[float]:
     """
-    Extract per-class AP values from COCO evaluator results dict.
+    Extract per-class AP and AR values from COCO evaluator results dict.
     
     The evaluator stores results as "AP-{class_id}" for each of 80 COCO classes.
     This function extracts them in order (0-79) and returns as a list.
     
     Args:
         results_dict: Dict returned from compute_coco_map() containing AP values
-        n_classes: Number of COCO classes (default 80)
+        categories: Categories the dataset includes. This could be a list of class names or 
+            dicts with "id" and "name" keys. If empty, defaults to COCO classes.
     
     Returns:
         List of float AP values, one per class (indices 0-79)
         Missing classes are filled with 0.0
     """
+
+    if not isinstance(categories, list):
+        logger.warning("Unsuported categories format.")
+        raise ValueError(f"Unsuported categories format. Expected a 'list'. Got '{type(categories)}' instead.")
+
+    if isinstance(categories[0], dict):
+        if "id" in categories[0] and "name" in categories[0]:
+            categories = [cat["name"] for cat in categories]
+        else:
+            logger.warning("Unsuported categories format.")
+            raise ValueError(f"Unsuported categories format. Expected [{'id': 1, 'name': 'category name'}, ...] format. Got {categories[0]} instead.")
     if not len(categories):
         categories = [
                 "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
@@ -140,28 +181,46 @@ def extract_per_class_ap(
             ]
         
     per_class_ap = []
-    for class_idx in range(len(categories)):
-        # Try to find AP-{class_idx} key
-        key = f"AP-{class_idx}"
-        ap_val = results_dict.get(key, 0.0)
-        per_class_ap.append(float(ap_val))
-    
-    # If no AP-{class_idx} keys found, try AP-{class_name} keys
-    if all(ap == 0.0 for ap in per_class_ap):
-        # Build list from class names if available
-        logger.debug("No AP-{class_idx} keys found in results; trying AP-{class_name} keys")
-        try:
-            # Try to get COCO class names
-            # This assumes the dataset is registered with Detectron2
-            # For COCO, class names are stored in MetadataCatalog
-            for class_idx, class_name in enumerate(categories):
-                key = f"AP-{class_name}"
-                ap_val = results_dict.get(key, 0.0)
-                per_class_ap[class_idx] = float(ap_val)
-        except Exception as e:
-            logger.warning("Failed to extract per-class AP from results: %s", str(e))
-    
-    return per_class_ap
+    try:
+        for class_idx in range(len(categories)):
+            # Try to find AP-{class_idx} key
+            ap_key = f"AP-{class_idx}"
+            ap_val = results_dict.get(ap_key, 0.0)
+
+            ar_key = f"AR-{class_idx}"
+            ar_val = results_dict.get(ar_key, 0.0)
+                
+            # If no AP-{class_idx} keys found, try AP-{class_name} keys
+            if ap_val == 0.0:
+                # Build list from class names if available
+                # Try to get COCO class names
+                # This assumes the dataset is registered with Detectron2
+                # For COCO, class names are stored in MetadataCatalog
+                class_name = categories[class_idx] if class_idx < len(categories) else f"class_{class_idx}"
+                logger.debug(f"No AP-{class_idx} key found in results; trying AP-{class_name} key")
+                ap_key = f"AP-{class_name}"
+                ap_val = results_dict.get(ap_key, 0.0)
+                
+                # if len(per_class_ap) > class_idx:
+                    # per_class_ap[class_idx].append(float(ar_val))
+                # else:
+                per_class_ap.append([class_name, float(ap_val)])
+
+            if ar_val == 0.0:
+                class_name = categories[class_idx] if class_idx < len(categories) else f"class_{class_idx}"
+                logger.debug(f"No AP-{class_idx} key found in results; trying AP-{class_name} key")
+                ar_key = f"AR-{class_name}"
+                ar_val = results_dict.get(ar_key, 0.0)
+
+                per_class_ap[class_idx].append(float(ar_val))
+
+            else:
+                per_class_ap.append([class_idx, float(ap_val), float(ar_val)])
+        
+        return per_class_ap
+    except Exception as e:
+        logger.error("Error extracting per-class AP: %s", str(e))
+        return []
 
 
 def quick_loss(

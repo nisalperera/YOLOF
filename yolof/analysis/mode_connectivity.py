@@ -5,6 +5,7 @@ Provides utilities for analyzing the loss landscape between two trained YOLOF mo
 by interpolating their weights and evaluating loss at interpolated points.
 """
 
+import time
 import logging
 from pathlib import Path
 from typing import Dict, Optional
@@ -13,6 +14,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from yolof.utils.utils import _format_duration
 from yolof_soup.utils.logging_utils import setup_logging
 
 logger = setup_logging(level=logging.INFO, filename="mode_connectivity.log", use_stdout=True)
@@ -188,6 +190,9 @@ def evaluate_loss_on_dataset(
 
     logger.info("Starting loss evaluation on dataset...")
 
+    eval_start = time.perf_counter()
+    chunk_start = time.perf_counter()  # timer for each 1000-batch chunk
+
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
             batch = _move_to_device(batch, device)
@@ -214,11 +219,37 @@ def evaluate_loss_on_dataset(
 
             num_samples += batch_size
             if max_samples is not None and num_samples >= max_samples:
+                # Log final partial chunk before breaking
+                chunk_elapsed = time.perf_counter() - chunk_start
+                logger.info(
+                    "Processed %d batches... (chunk: %s, total: %s)",
+                    batch_idx + 1,
+                    _format_duration(chunk_elapsed),
+                    _format_duration(time.perf_counter() - eval_start),
+                )
                 break
 
-            if (batch_idx + 1) % 1000 == 0 or batch_idx + 1 == len(dataloader):
-                logger.info("Processed %d batches...", batch_idx + 1)
+            if (batch_idx + 1) % 100 == 0 or batch_idx + 1 == len(dataloader.dataset._dataset) // dataloader.batch_size:
+                chunk_elapsed = time.perf_counter() - chunk_start
+                total_elapsed = time.perf_counter() - eval_start
+                batches_done = batch_idx + 1
+                batches_total = len(dataloader.dataset._dataset) // dataloader.batch_size
+                # Estimate remaining time based on average batch time so far
+                avg_per_batch = total_elapsed / batches_done
+                remaining_batches = batches_total - batches_done
+                eta = avg_per_batch * remaining_batches
 
+                logger.info(
+                    "Processed %d/%d batches | chunk: %s | elapsed: %s | ETA: %s",
+                    batches_done,
+                    batches_total,
+                    _format_duration(chunk_elapsed),
+                    _format_duration(total_elapsed),
+                    _format_duration(eta),
+                )
+                chunk_start = time.perf_counter()  # reset chunk timer
+
+    total_elapsed = time.perf_counter() - eval_start
     avg_loss_cls = total_loss_cls / max(1, num_samples)
     avg_loss_box_reg = total_loss_box_reg / max(1, num_samples)
     avg_loss_total = total_loss / max(1, num_samples)
@@ -228,12 +259,13 @@ def evaluate_loss_on_dataset(
         "loss_box_reg": avg_loss_box_reg,
         "loss_total": avg_loss_total,
         "num_samples": num_samples,
+        "eval_time_seconds": total_elapsed,
     }
 
-    logger.info("Loss evaluation complete. Samples: %d", num_samples)
+    logger.info("Loss evaluation complete in %s. Samples: %d", _format_duration(total_elapsed), num_samples)
     logger.info("  Classification loss: %.6f", avg_loss_cls)
-    logger.info("  Regression loss: %.6f", avg_loss_box_reg)
-    logger.info("  Total loss: %.6f", avg_loss_total)
+    logger.info("  Regression loss:     %.6f", avg_loss_box_reg)
+    logger.info("  Total loss:          %.6f", avg_loss_total)
 
     return results
 

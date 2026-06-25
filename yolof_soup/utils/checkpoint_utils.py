@@ -21,8 +21,8 @@ from yolof.analysis.mode_connectivity import load_checkpoint_state_dict
 from yolof.analysis.model_soup import save_soup
 from yolof_soup.utils.global_logger import get_logger
 
-logger = get_logger()
 
+logger = get_logger(logging.DEBUG, add_file_handler=True)
 
 # ── Loading ───────────────────────────────────────────────
 
