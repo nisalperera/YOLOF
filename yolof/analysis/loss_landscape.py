@@ -21,7 +21,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-logger = logging.getLogger(__name__)
+from yolof_soup.utils.logging_utils import setup_logging
+
+logger = setup_logging(logging.INFO, filename="analysis/loss_landscape.log", use_stdout=True)
 
 
 # --------------------------------------------------------------------------- #

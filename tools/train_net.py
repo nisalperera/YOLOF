@@ -223,7 +223,26 @@ class Trainer(DefaultTrainer):
         Overrides DefaultTrainer.build_model.
         """
         model = super().build_model(cfg)          # builds YOLOF normally + moves to device
-        model = cls._freeze_and_reinit_decoder(model)
+        
+        frozen_backbone = 0
+        for p in model.backbone.parameters():
+            if not p.requires_grad:
+                frozen_backbone += p.numel()
+
+        frozen_encoder = 0
+        for p in model.encoder.parameters():
+            if not p.requires_grad:
+                frozen_encoder += p.numel()
+
+        frozen_decoder = 0
+        for p in model.decoder.parameters():
+            if not p.requires_grad:
+                frozen_decoder += p.numel()
+
+        cls.logger.info(f"[FrozenParams] Frozen backbone params : {frozen_backbone:,}")
+        cls.logger.info(f"[FrozenParams] Frozen encoder params  : {frozen_encoder:,}")
+        cls.logger.info(f"[FrozenParams] Frozen decoder params: {frozen_decoder:,}")
+        
         return model
 
 
@@ -234,53 +253,6 @@ class Trainer(DefaultTrainer):
         if resume and self.checkpointer.has_checkpoint():
             self.iter = checkpoints.get("iteration", 0)
             self.start_iter = self.iter + 1
-
-        # Re-init decoder AFTER checkpoint load on fresh runs only.
-        # This overwrites the decoder weights the checkpoint just restored,
-        # guaranteeing the decoder always starts from random init.
-        if not resume:
-            self.model.decoder._init_weight()
-            self.logger.info(
-                "[FreezeReinit] Decoder re-initialised after checkpoint load."
-            )
-
-
-    @classmethod
-    def _freeze_and_reinit_decoder(cls, model):
-        """
-        Freeze backbone and encoder parameters.
-        Re-initialise decoder from scratch using its own _init_weight().
-        This ensures LMC/soup experiments compare models that differ only
-        in how the decoder converged from the same random distribution.
-        """
-
-        # 1. Freeze backbone
-        frozen_backbone = 0
-        for p in model.backbone.parameters():
-            if not p.requires_grad:
-                frozen_backbone += p.numel()
-
-        # 2. Freeze encoder
-        frozen_encoder = 0
-        for p in model.encoder.parameters():
-            if not p.requires_grad:
-                frozen_encoder += p.numel()
-
-        # 3. Re-initialise decoder from scratch
-        # _init_weight() is already defined on Decoder — it sets Conv2d weights to
-        # N(0, 0.01), BN/GN weights to 1/0, and cls_score.bias to prior_prob value.
-
-        # Make absolutely sure decoder parameters are trainable
-        frozen_decoder = 0
-        for p in model.decoder.parameters():
-            if not p.requires_grad:
-                frozen_decoder += p.numel()
-
-        cls.logger.info(f"[FreezeReinit] Frozen backbone params : {frozen_backbone:,}")
-        cls.logger.info(f"[FreezeReinit] Frozen encoder params  : {frozen_encoder:,}")
-        cls.logger.info(f"[FreezeReinit] Frozen decoder params: {frozen_decoder:,}")
-        return model
-
 
 
 def setup(args):
@@ -409,7 +381,6 @@ if __name__ == "__main__":
     )
 
 
-# python3 ./tools/train_net.py --num-gpus 1 --config-file configs/yolof_R_50_DC5_1x.yaml DATALOADER.NUM_WORKERS 4 
-# DATALOADER.SAMPLER_TRAIN "RepeatFactorTrainingSampler" DATALOADER.REPEAT_THRESHOLD 0.05 SOLVER.IMS_PER_BATCH 8 
-# SOLVER.WARMUP_ITERS 330 SOLVER.BASE_LR 0.01 SOLVER.MAX_ITER 33750 SOLVER.STEPS '(26250, 31250)' SOLVER.CHECKPOINT_PERIOD 3375 
+# python3 ./tools/train_net.py --num-gpus 1 --config-file configs/yolof_R_50_DC5_1x.yaml DATALOADER.NUM_WORKERS 4 DATALOADER.SAMPLER_TRAIN "RepeatFactorTrainingSampler" DATALOADER.REPEAT_THRESHOLD 0.05 
+# SOLVER.IMS_PER_BATCH 8 SOLVER.WARMUP_ITERS 330 SOLVER.BASE_LR 0.01 SOLVER.MAX_ITER 33750 SOLVER.STEPS '(26250, 31250)' SOLVER.CHECKPOINT_PERIOD 3375 
 # TEST.EVAL_PERIOD 3375 MODEL.WEIGHTS /kaggle/input/models/nisalchperera/yolof-resnet-50/pytorch/default/4/YOLOF_R50_DC5_1x.pth

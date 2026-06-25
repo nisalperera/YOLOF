@@ -4,8 +4,8 @@
     "context": "${localWorkspaceFolder}",
     "dockerfile": "${localWorkspaceFolder}/docker/Dockerfile",
     "args": {
-      "UID": "${localEnv:USER_ID}",
-      "GID": "${localEnv:GROUP_ID}",
+      "UID": "${localEnv:USER_ID:1000}",
+      "GID": "${localEnv:GROUP_ID:1000}",
       "USER": "${localEnv:USER:ubuntu}"
     }
   },

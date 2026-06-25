@@ -54,12 +54,9 @@ from yolof.analysis import (
     save_soup,
     load_checkpoint_state_dict,
 )
+from yolof_soup.utils.logging_utils import setup_logging
 
-logging.basicConfig(
-    format="%(asctime)s %(name)s %(levelname)s: %(message)s",
-    level=logging.INFO,
-)
-logger = logging.getLogger(__name__)
+logger = setup_logging(logging.INFO, filename="tools/run_all_analysis.log", use_stdout=True)
 
 
 # =========================================================================== #

@@ -11,9 +11,20 @@ A simple, fast, and efficient object detector **without** FPN.
 
 ## YOLOF Soup Experiments Guide
 
-For the thesis-oriented YOLOF soup workflow (Phase 3 to Phase 5, RQ1 and RQ3 scripts, run registry, outputs, and troubleshooting), see:
+For the thesis-oriented YOLOF soup workflow, including:
+- Phase 3: Soup Construction (M1-M4 conditions)
+- Phase 4: Loss Landscape Analysis (LMC barriers, Hessian traces)
+- Phase 5: Head Fine-Tuning (D1, D2, C3 variants)
+- RQ3: Coefficient Strategy Tests
+- RQ4: Full Pipeline & Per-Category Analysis
+- Full Integration Test with validation
 
-- [yolof_soup/README.md](yolof_soup/README.md)
+See:
+- [yolof_soup/README.md](yolof_soup/README.md) - Main soup module guide
+- [INTEGRATION_TESTING_GUIDE.md](INTEGRATION_TESTING_GUIDE.md) - Integration test documentation
+- [YOLOF_SOUP_BEGINNER_GUIDE.md](YOLOF_SOUP_BEGINNER_GUIDE.md) - Complete beginner introduction
+- [YOLOF_SOUP_PYTHON_API.md](YOLOF_SOUP_PYTHON_API.md) - Python programmer reference
+- [YOLOF_SOUP_QUICK_REFERENCE.md](YOLOF_SOUP_QUICK_REFERENCE.md) - Quick lookup cheat sheet
 
 ## Getting Started
 

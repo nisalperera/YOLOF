@@ -1,6 +1,7 @@
 _BASE_: "yolof_R_50_DC5_1x_thesis_base.yaml"
 
 SOLVER:
+  BASE_LR: 0.001
   IMS_PER_BATCH: 8          # local default (overridden on cloud)
   MAX_ITER: 8           # ~8 epochs if 1x ~90000, adjust to your schedule
   WARMUP_ITERS: 1

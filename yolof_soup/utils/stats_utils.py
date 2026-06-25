@@ -21,7 +21,9 @@ from typing import Dict, List, Optional
 import numpy as np
 from scipy import stats
 
-logger = logging.getLogger(__name__)
+from yolof_soup.utils.global_logger import get_logger
+
+logger = get_logger(logging.DEBUG, add_file_handler=True)
 
 
 # ── RQ1/H1 ───────────────────────────────────────────────

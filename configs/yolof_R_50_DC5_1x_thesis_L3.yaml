@@ -6,7 +6,7 @@ SOLVER:
   WARMUP_ITERS: 1
   STEPS: [0.66, 0.88]     # ≈ epochs 5 and 7 in an 8-epoch run
   GAMMA: 0.1
-  WEIGHT_DECAY: 0.0005
+  WEIGHT_DECAY: 0.00005
 
 LOGGER:
   WANDB:

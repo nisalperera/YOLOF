@@ -31,6 +31,10 @@ echo "Downloading val2017.zip (~1GB) with 16 parallel chunks..."
 download_parallel "$BASE_URL/zips/val2017.zip" $DATASET_ROOT/images/
 unzip -q -d $DATASET_ROOT/images/ $DATASET_ROOT/images/val2017.zip && rm $DATASET_ROOT/images/val2017.zip
 
+echo "Downloading test2017.zip (~241MB) with 16 parallel chunks..."
+download_parallel "$BASE_URL/zips/test2017.zip" $DATASET_ROOT/images/
+unzip -q -d $DATASET_ROOT/images/ $DATASET_ROOT/images/test2017.zip && rm $DATASET_ROOT/images/test2017.zip
+
 echo "Downloading annotations (~241MB) with 16 parallel chunks..."
 download_parallel "$BASE_URL/annotations/annotations_trainval2017.zip" $DATASET_ROOT/
 unzip -q -d $DATASET_ROOT/ $DATASET_ROOT/annotations_trainval2017.zip && rm $DATASET_ROOT/annotations_trainval2017.zip

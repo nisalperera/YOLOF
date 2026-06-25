@@ -21,6 +21,7 @@ class ExperimentRunSpec:
     run_id: str
     role: str
     run_type: str
+    run_name: str
     changed_hyperparameter: str
     expected_gpu: str
     source_checkpoint_kind: str
@@ -41,6 +42,7 @@ RUN_SPECS: Tuple[ExperimentRunSpec, ...] = (
         run_id="L1",
         role="ingredient",
         run_type="full_finetune",
+        run_name="finetune_thesis_L1",
         changed_hyperparameter="base_config_anchor",
         expected_gpu="RTX 5070 Ti",
         source_checkpoint_kind="pretrained_base",
@@ -50,6 +52,7 @@ RUN_SPECS: Tuple[ExperimentRunSpec, ...] = (
         run_id="L2",
         role="ingredient",
         run_type="full_finetune",
+        run_name="finetune_thesis_L2",
         changed_hyperparameter="learning_rate",
         expected_gpu="RTX 5070 Ti",
         source_checkpoint_kind="pretrained_base",
@@ -59,6 +62,7 @@ RUN_SPECS: Tuple[ExperimentRunSpec, ...] = (
         run_id="L3",
         role="ingredient",
         run_type="full_finetune",
+        run_name="finetune_thesis_L3",
         changed_hyperparameter="weight_decay",
         expected_gpu="RTX 5070 Ti",
         source_checkpoint_kind="pretrained_base",
@@ -68,6 +72,7 @@ RUN_SPECS: Tuple[ExperimentRunSpec, ...] = (
         run_id="L4",
         role="ingredient",
         run_type="full_finetune",
+        run_name="finetune_thesis_L4",
         changed_hyperparameter="training_epochs",
         expected_gpu="RTX 5070 Ti",
         source_checkpoint_kind="pretrained_base",
@@ -77,6 +82,7 @@ RUN_SPECS: Tuple[ExperimentRunSpec, ...] = (
         run_id="C1",
         role="ingredient",
         run_type="full_finetune",
+        run_name="finetune_thesis_C1",
         changed_hyperparameter="batch_size",
         expected_gpu="RTX 5090",
         source_checkpoint_kind="pretrained_base",
@@ -86,6 +92,7 @@ RUN_SPECS: Tuple[ExperimentRunSpec, ...] = (
         run_id="C2",
         role="ingredient",
         run_type="full_finetune",
+        run_name="finetune_thesis_C2",
         changed_hyperparameter="lr_schedule",
         expected_gpu="RTX 5090",
         source_checkpoint_kind="pretrained_base",
@@ -95,6 +102,7 @@ RUN_SPECS: Tuple[ExperimentRunSpec, ...] = (
         run_id="D1",
         role="head_finetune",
         run_type="decoder_finetune",
+        run_name="finetune_thesis_D1",
         changed_hyperparameter="merge_source_M2",
         expected_gpu="RTX 5070 Ti",
         source_checkpoint_kind="merged_soup",
@@ -103,6 +111,7 @@ RUN_SPECS: Tuple[ExperimentRunSpec, ...] = (
         run_id="D2",
         role="head_finetune",
         run_type="decoder_finetune",
+        run_name="finetune_thesis_D2",
         changed_hyperparameter="merge_source_best_of_M3_M4",
         expected_gpu="RTX 5070 Ti",
         source_checkpoint_kind="merged_soup",
@@ -111,6 +120,7 @@ RUN_SPECS: Tuple[ExperimentRunSpec, ...] = (
         run_id="C3",
         role="final_pipeline",
         run_type="decoder_finetune",
+        run_name="finetune_thesis_C3",
         changed_hyperparameter="final_pipeline_selection",
         expected_gpu="RTX 5090",
         source_checkpoint_kind="merged_soup",

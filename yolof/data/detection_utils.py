@@ -14,8 +14,6 @@ from .augmentation_impl import (
     DetectionAutoAugment,
 )
 
-logger = logging.getLogger(__name__)
-
 # Multi-scale short-side sizes used by various groups
 _WIDE_MULTI_SCALE = (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800)
 
