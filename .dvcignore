@@ -1,0 +1,5 @@
+# Add patterns to ignore tracked data files/directories.
+# Syntax is the same as .gitignore.
+
+# Ignore large model checkpoints from DVC diff (tracked via dvc add instead)
+# outputs/checkpoints/**/*.pth
