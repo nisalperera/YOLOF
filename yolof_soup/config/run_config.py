@@ -1,0 +1,294 @@
+"""
+run_config.py  (renamed from experiment_config.py)
+===================================================
+Single source of truth for every path, hyperparameter, and Detectron2
+CfgNode factory used across the YOLOF Model-Soup thesis experiments.
+
+Sections
+--------
+1.  Environment / hardware
+2.  Directory layout
+3.  Dataset registration & identifiers
+4.  Checkpoint paths
+5.  Training hyperparameters  (Phase 1 & 2)
+6.  Soup-construction hyperparameters  (Phase 3)
+7.  Loss-landscape hyperparameters  (Phase 4)
+8.  Statistics thresholds
+9.  Detectron2 CfgNode factories   (build_phase1_cfg, build_phase2_cfg,
+                                    build_eval_cfg)
+
+All paths are relative to PROJECT_ROOT so the repo is portable.
+Override any value via environment variables before importing this module,
+e.g.:
+    export THESIS_ROOT=/scratch/nisal/thesis
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from pathlib import Path
+
+import torch
+
+# ── Optional: pull Detectron2 lazily so this module imports even without it ──
+try:
+    from detectron2.data import DatasetCatalog, MetadataCatalog
+    _D2_AVAILABLE = True
+except ImportError:
+    _D2_AVAILABLE = False
+
+from yolof.config import get_cfg
+from yolof_soup.utils.experiment_logger import get_logger
+
+
+logger = get_logger(logging.DEBUG, add_file_handler=True)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1.  Environment / Hardware
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: GPU count for Detectron2 launch().  Override with env var THESIS_NUM_GPUS.
+NUM_GPUS: int = int(os.environ.get("THESIS_NUM_GPUS", "1"))
+
+#: Batch size per GPU for training. Override with env var THESIS_BATCH_SIZE_PER_GPU.
+BATCH_SIZE_PER_GPU: int = int(os.environ.get("THESIS_BATCH_SIZE_PER_GPU", "16"))
+CAL_BATCH_SIZE_PER_GPU: int = int(os.environ.get("THESIS_CAL_BATCH_SIZE_PER_GPU", "32"))
+
+#: Primary compute device for non-Detectron2 code (soup arithmetic, stats).
+DEVICE: torch.device = torch.device(
+    os.environ.get("THESIS_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
+)
+
+#: Mixed-precision training flag.
+AMP_ENABLED: bool = DEVICE.type == "cuda"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2.  Directory layout
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: Absolute project root.  Override with env var THESIS_ROOT.
+PROJECT_ROOT: Path = Path(
+    os.environ.get("THESIS_ROOT", Path(__file__).resolve().parents[2])
+)
+
+#: Sub-directory tree (created on first use by each phase).
+DATA_DIR:       Path = PROJECT_ROOT / "datasets"
+CHECKPOINT_DIR: Path = PROJECT_ROOT / "output"
+RESULTS_DIR:    Path = PROJECT_ROOT / "results"
+LOG_DIR:        Path = PROJECT_ROOT / "logs"
+
+# Output directories per training phase
+PHASE2_OUTPUT_DIR: Path = CHECKPOINT_DIR / "soup_exps/ingridients-refined"
+
+# Ensure key directories exist at import time
+for _d in (CHECKPOINT_DIR, RESULTS_DIR, LOG_DIR, PHASE2_OUTPUT_DIR):
+    _d.mkdir(parents=True, exist_ok=True)
+
+# Convert to str for Detectron2 (which expects str, not Path)
+CHECKPOINT_DIR  = str(CHECKPOINT_DIR)
+RESULTS_DIR     = str(RESULTS_DIR)
+LOG_DIR         = str(LOG_DIR)
+PHASE2_OUTPUT_DIR = str(PHASE2_OUTPUT_DIR)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3.  Dataset registration & identifiers
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: COCO 2017 image directories.  Override via env vars if on a cluster.
+COCO_ROOT:    str = os.environ.get("COCO_ROOT", str(DATA_DIR / "coco"))
+COCO_TRAIN_IMG_DIR: str = os.path.join(COCO_ROOT, "images/train2017")
+COCO_VAL_IMG_DIR:   str = os.path.join(COCO_ROOT, "images/val2017")
+
+#: COCO annotation files.
+COCO_TRAIN_ANN: str = os.path.join(COCO_ROOT, "annotations",
+                                    "instances_train2017.json")
+COCO_VAL_ANN:   str = os.path.join(COCO_ROOT, "annotations",
+                                    "instances_val2017.json")
+
+#: COCO OI image directories.  Override via env vars if on a cluster.
+COCO_OI_ROOT: str = str(DATA_DIR / "coco_oi")
+COCO_OI_VAL_IMG_DIR: str = os.path.join(COCO_OI_ROOT, "images/")
+
+#: COCO OI annotation files.
+COCO_OI_VAL_ANN:   str = os.path.join(COCO_OI_ROOT, "annotations",
+                                    "coco_oi_instances_eval.json")
+
+TRAIN_DATASET:     str = "coco2017_train"
+SELECTION_DATASET: str = "coco_oi_validation"
+EVAL_DATASET:      str = "coco2017_validation"
+
+VOC_ROOT:    str = os.environ.get("VOC_ROOT", str(DATA_DIR / "voc2007"))
+VOC_IMG_DIR: str = os.path.join(VOC_ROOT, "JPEGImages")
+VOC_ANN:     str = os.path.join(VOC_ROOT, "annotations",
+                                 "voc2007_test_coco_format.json")
+VOC_DATASET: str = "voc_2007_test"
+
+
+def _register_datasets() -> None:
+    """Register all thesis dataset splits with Detectron2's DatasetCatalog."""
+    if not _D2_AVAILABLE:
+        logger.warning("Detectron2 not available — dataset registration skipped.")
+        return
+
+    from detectron2.data.datasets import register_coco_instances
+
+    _splits = [
+        (TRAIN_DATASET,     COCO_TRAIN_ANN,  COCO_TRAIN_IMG_DIR),
+        (SELECTION_DATASET, COCO_OI_VAL_ANN,   COCO_OI_VAL_IMG_DIR),
+        (EVAL_DATASET,      COCO_VAL_ANN,        COCO_VAL_IMG_DIR),
+        (VOC_DATASET,       VOC_ANN,         VOC_IMG_DIR),
+    ]
+
+    for name, ann, img_dir in _splits:
+        if name not in DatasetCatalog.list():
+            try:
+                register_coco_instances(name, {}, ann, img_dir)
+                logger.debug("Registered dataset: %s", name)
+            except FileNotFoundError:
+                logger.warning(
+                    "Annotation file not found for '%s': %s — "
+                    "dataset will not be available until annotations exist.",
+                    name, ann,
+                )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4.  Checkpoint paths
+# ─────────────────────────────────────────────────────────────────────────────
+
+N_INGREDIENTS: int = int(os.environ.get("THESIS_N_INGREDIENTS", "6"))
+
+PRETRAINED_WEIGHTS: str = "/home/nisalperera/YOLOF/models/YOLOF_R50_DC5_1x.pth"
+
+YOLOF_BASE_YAML = os.path.join(
+        os.environ.get("YOLOF_CONFIG_DIR",
+                       str(PROJECT_ROOT / "configs")),
+        "yolof_R_50_DC5_1x_thesis_base.yaml",
+    )
+
+DECODER_CKPT_PATHS: list[str] = [
+    os.path.join(PHASE2_OUTPUT_DIR, f"decoder_run{i:02d}.pth")
+    for i in range(N_INGREDIENTS)
+]
+
+GLOBAL_CKPT_PATHS: list[str] = [
+    os.path.join(PHASE2_OUTPUT_DIR, f"global_run{i:02d}.pth")
+    for i in range(N_INGREDIENTS)
+]
+
+BASELINE_CKPT: str = os.path.join(PHASE2_OUTPUT_DIR, "best_individual.pth")
+
+LEARNED_SOUP_CKPT: str  = os.path.join(CHECKPOINT_DIR, "learned_head_soup.pth")
+GREEDY_SOUP_CKPT: str   = os.path.join(CHECKPOINT_DIR, "greedy_head_soup.pth")
+UNIFORM_SOUP_CKPT: str  = os.path.join(CHECKPOINT_DIR, "uniform_head_soup.pth")
+GLOBAL_SOUP_CKPT: str   = os.path.join(CHECKPOINT_DIR, "global_uniform_soup.pth")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6.  Soup-construction hyperparameters
+# ─────────────────────────────────────────────────────────────────────────────
+
+LAMBDA_GRID: list[float] = [-0.5, 0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+MAX_CD_PASSES: int = 20
+CONVERGE_TOL: float = 1e-3
+SELECTION_EVAL_MAX_IMGS: int = 500
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7.  Loss-landscape hyperparameters
+# ─────────────────────────────────────────────────────────────────────────────
+
+LMC_ALPHA_STEPS: int = 11
+SAM_RHO: float = 0.05
+SHARPNESS_STEPS: int = 5
+LANDSCAPE_EVAL_MAX_IMGS: int = 200
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8.  Statistics thresholds
+# ─────────────────────────────────────────────────────────────────────────────
+
+ALPHA_SIGNIFICANCE: float = 0.05
+N_BOOTSTRAP: int = 10_000
+COHENS_D_THRESHOLD: float = 0.5
+SPEARMAN_R_THRESHOLD: float = 0.3
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9.  Detectron2 CfgNode factories
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _base_yolof_cfg(weights_path: str = PRETRAINED_WEIGHTS):
+    """
+    Return a CfgNode pre-loaded with the canonical YOLOF-R50-C5-1x defaults.
+    All factory functions call this first, then override only what they need.
+    """
+    assert _D2_AVAILABLE, "Detectron2 is required to build CfgNodes."
+    cfg = get_cfg()
+    cfg.set_new_allowed(True)
+
+    if os.path.isfile(YOLOF_BASE_YAML):
+        cfg.merge_from_file(YOLOF_BASE_YAML)
+    else:
+        logger.warning(
+            "YOLOF base YAML not found at %s — using Detectron2 defaults. "
+            "Set env var YOLOF_CONFIG_DIR to fix this.", YOLOF_BASE_YAML
+        )
+
+    cfg.MODEL.DEVICE           = str(DEVICE)
+    cfg.DATALOADER.NUM_WORKERS = int(os.environ.get("THESIS_NUM_WORKERS", "4"))
+
+    if weights_path is not None and os.path.isfile(weights_path):
+        cfg.MODEL.WEIGHTS = str(weights_path)
+    else:
+        cfg.MODEL.WEIGHTS = ""
+        logger.warning(
+            "Pretrained weights not found at %s — "
+            "training will start from scratch.", weights_path
+        )
+
+    return cfg
+
+
+def build_eval_cfg(dataset: str = EVAL_DATASET, cfg_file: str | Path = YOLOF_BASE_YAML, weights_path: str | Path = PRETRAINED_WEIGHTS, calibration: bool = False):
+    """
+    Lightweight CfgNode for inference-only passes (soup evaluation,
+    loss landscape measurement).
+
+    Parameters
+    ----------
+    dataset : str
+        Detectron2 dataset name — one of SELECTION_DATASET, EVAL_DATASET,
+        VOC_DATASET, or TRAIN_DATASET.
+    """
+    cfg = _base_yolof_cfg(weights_path=weights_path)
+
+    if cfg_file:
+        if os.path.isfile(cfg_file):
+            cfg.merge_from_file(cfg_file)
+        else:
+            logger.warning(
+                "Custom eval CfgNode YAML not found at %s — using defaults.", cfg_file
+            )
+
+    if weights_path:
+        if os.path.isfile(weights_path):
+            cfg.MODEL.WEIGHTS = str(weights_path)
+        else:
+            logger.warning(
+                "Custom eval weights not found at %s — using defaults.", weights_path
+            )
+
+    if calibration:
+        cfg.SOLVER.IMS_PER_BATCH = CAL_BATCH_SIZE_PER_GPU * max(NUM_GPUS, torch.cuda.device_count())
+    else:
+        cfg.SOLVER.IMS_PER_BATCH = BATCH_SIZE_PER_GPU * max(NUM_GPUS, torch.cuda.device_count())
+
+    cfg.DATASETS.TRAIN = (TRAIN_DATASET,)
+    cfg.DATASETS.TEST  = (dataset,)
+    cfg.OUTPUT_DIR = RESULTS_DIR
+
+    cfg.freeze()
+    return cfg
