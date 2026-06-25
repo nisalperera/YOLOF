@@ -1,419 +1,508 @@
-# Experiment Execution Order & Individual Commands
+# Experiment Execution Order
 
-This document provides the exact command sequence to run all experiments individually from Phase 2b through Phase 7.
+This document defines the canonical execution sequence for all thesis experiments,
+aligned to **Chapter 3 (Methodology), Section 3.4 — Data Collection Procedure**.
 
----
-
-## Overview
-
-**Project Status:**
-- ✅ Phase 1: Reproducibility setup & pilot check (COMPLETED)
-- ✅ Phase 2a: Ingredient pool training (L1-L4, C1-C2) (COMPLETED)
-- ☐ Phase 2b-7: Automated analysis (THIS DOCUMENT)
-- ☐ Phase 5a-5b: User-managed fine-tuning (MANUAL)
-
-**Working Directory:** `/home/nisalperera/YOLOF/`
-
-All commands below assume you are in this directory.
+All commands assume working directory: `/home/nisalperera/YOLOF/`
 
 ---
 
-## Quick Start: Run All Automated Phases Sequentially
+## Status Overview
 
-To run Phases 2b → 4b (takes ~1-2 hours):
+| Stage | Thesis Step | Script | Status |
+|---|---|---|---|
+| Phase 1 | Step 1 — Reproducibility setup | *(manual)* | ✅ DONE |
+| Phase 2a | Step 2a — Ingredient pool training (L1–L4, C1–C2) | `tools/train_net.py` | ✅ DONE |
+| Step 2b | Step 2b — Pilot divergence check | `pipeline_runner.py --stage 2b` | ☐ |
+| Step 3 | Step 3 — Ingredient diversity analysis | `ingredient_diversity_analysis.py` | ☐ |
+| Step 4 | Step 4 — Ingredient pool review | *(manual review)* | ☐ |
+| Step 5 | Step 5 — Ingredient quality audit | `ingredient_quality_audit.py` | ☐ |
+| Step 6 | Step 6 — LMC barriers + Hessian traces | `lmc_hessian_analysis.py` | ☐ |
+| Step 7 | Step 7 — Merging conditions C1–C6 + Greedy | `merge_conditions.py` + `merge_greedy.py` + `merge_tricomponent_greedy.py` | ☐ |
+| Step 8 | Step 8 — Checkpoint pre-registration | `checkpoint_preregistration.py` | ☐ |
+| Steps 9–10 | Steps 9–10 — Decoder fine-tuning D1, D2, C3 | `decoder_finetune.py` *(manual)* | ☐ |
+| Step 11 | Step 11 — Hypothesis tests RQ1–RQ4 | `hypothesis_tests.py` | ☐ |
+| Step 12 | Step 12 — COCO test-dev2017 final evaluation | `coco_testdev_eval.py` | ☐ |
+
+---
+
+## Quick Start — Full Automated Pipeline (DVC)
+
+The preferred way to run all automated stages is via DVC, which handles dependency
+tracking, caching, and reproducibility automatically:
 
 ```bash
 cd /home/nisalperera/YOLOF
-python yolof_soup/run_phases_2b_to_7.py --run-all
+
+# Reproduce all pipeline stages from Step 2b onwards
+dvc repro
+
+# Reproduce a specific stage only
+dvc repro merge_conditions
+dvc repro hypothesis_tests
 ```
 
-After you complete Phase 5a and 5b manually, run Phases 6-7:
+To run without DVC (manual orchestrator):
 
 ```bash
-python yolof_soup/run_phases_2b_to_7.py --phase 6,7 --after-user-phase-5
+# Stages 2b → 8 (automated)
+python -m yolof_soup.pipeline_runner --run-all
+
+# Stages 11–12 after you complete Steps 9–10 manually
+python -m yolof_soup.pipeline_runner --stage stats,finaleval --after-user-finetune
 ```
 
 ---
 
-## Phase-by-Phase Individual Commands
+## Step-by-Step Execution
 
-### **Phase 2b: Ingredient Quality Audit**
+---
 
-**Purpose:** Evaluate 6 Phase 2a ingredients (L1-L4, C1-C2) on COCO val2017, flag outliers.
+### Step 2b — Pilot Divergence Check
 
-**Required Inputs:**
-- 6 checkpoints in `checkpoints/output/`: `L1_checkpoint.pth`, `L2_checkpoint.pth`, ..., `C2_checkpoint.pth`
+**Thesis reference:** Section 3.4, Step 2b  
+**Purpose:** Confirm that all N=6 ingredient checkpoints (L1–L4, C1–C2) converged
+and are numerically valid before committing to expensive analysis.
 
-**Command (via Master Orchestrator):**
+**Required inputs:**
+- 6 checkpoints in `output/soup_exps/ingridients-refined/`
+
+**Command:**
 ```bash
-python yolof_soup/run_phases_2b_to_7.py --phase 2b
+python -m yolof_soup.pipeline_runner --stage 2b
 ```
 
-**Command (Direct Execution):**
+**Direct execution:**
 ```bash
-python yolof_soup/experiments/quality_audit.py \
-  --phase2-output-dir checkpoints/output \
+python yolof_soup/experiments/ingredient_quality_audit.py \
+  --phase2-output-dir output/soup_exps/ingridients-refined \
   --results-dir results \
   --outlier-threshold 3.0
 ```
 
-**Output Files:**
-- `results/phase2b_audit_report.json` – Detailed per-ingredient metrics
-- `results/phase2b_audit_summary.txt` – Human-readable summary
+**Outputs:**
+- `results/ingredient_quality_audit_report.json`
+- `results/ingredient_quality_audit_summary.txt`
 
-**Expected Runtime:** 15–30 minutes
-
-**Options:**
-- `--phase2-output-dir`: Override Phase 2a checkpoint location (default: `checkpoints/output`)
-- `--results-dir`: Override results output directory (default: `results`)
-- `--outlier-threshold`: mAP threshold (pp) for flagging outliers (default: 3.0)
+**Expected runtime:** 15–30 min
 
 ---
 
-### **Phase 3: Loss Landscape Measurement**
+### Step 3 — Ingredient Diversity Analysis
 
-**Purpose:** Compute linear mode connectivity (LMC) barriers and Hessian traces between ingredient pairs.
+**Thesis reference:** Section 3.2.1 (hyperparameter-induced diversity criterion)  
+**Purpose:** Measure weight-space diversity across the N=6 ingredient pool to confirm
+the pool satisfies the diversity inclusion criterion for LMC analysis (MV1).
 
-**Required Inputs:**
-- 6 ingredient checkpoints from Phase 2b audit
+**Required inputs:**
+- 6 ingredient checkpoints from Step 2b
 
-**Command (via Master Orchestrator):**
+**Command:**
 ```bash
-python yolof_soup/run_phases_2b_to_7.py --phase 3
+python yolof_soup/experiments/ingredient_diversity_analysis.py \
+  --checkpoint-dir output/soup_exps/ingridients-refined \
+  --results-dir results
 ```
 
-**Command (Direct Execution):**
-```bash
-python yolof_soup/experiments/loss_landscape.py --verbose
-```
+**Outputs:**
+- `results/ingredient_diversity_report.json`
+- `results/ingredient_diversity_summary.txt`
 
-**Output Files:**
-- `results/phase3_lmc_results.json` – Barrier measurements (4-point grids between pairs)
-- `results/phase3_hessian_traces.json` – Hessian trace estimates
-- `results/phase3_landscape_report.txt` – Text summary
-
-**Expected Runtime:** 45–90 minutes
-
-**Options:**
-- `--verbose`: Enable DEBUG-level logging
+**Expected runtime:** 10–20 min
 
 ---
 
-### **Phase 4: Soup Construction & Evaluation**
+### Step 4 — Ingredient Pool Review *(manual)*
 
-**Purpose:** Construct 4 soup variants (M1, M2, M3, M4) and evaluate on COCO val2017.
+**Thesis reference:** Section 3.4, Step 4  
+**Purpose:** Manually review Steps 2b and 3 outputs. Exclude any ingredient whose
+mAP falls more than 3 pp below the pool maximum.
 
-**Required Inputs:**
-- Phase 3 loss landscape results (used for M4 Fisher weighting)
-- 6 ingredient checkpoints
-
-**Command (via Master Orchestrator):**
-```bash
-python yolof_soup/run_phases_2b_to_7.py --phase 4
-```
-
-**Command (Direct Execution):**
-```bash
-python yolof_soup/experiments/soup_construction.py --verbose
-```
-
-**Output Files:**
-- `results/phase4_soup_results.json` – Metrics for all 4 soups (M1-M4)
-- `checkpoints/soup_checkpoints/M1.pth`, `M2.pth`, `M3.pth`, `M4.pth` – Soup model checkpoints
-- `results/phase4_soup_report.txt` – Performance comparison
-
-**Expected Runtime:** 60–120 minutes
-
-**Options:**
-- `--verbose`: Enable DEBUG-level logging
+Confirm at least N=4 ingredients remain before proceeding.
 
 ---
 
-### **Phase 4b: Pre-Registration of Best Learned Soup**
+### Step 5 — Ingredient Quality Audit
 
-**Purpose:** Pre-register the best soup (M1-M4) to prevent post-hoc selection bias before Phase 5.
+**Thesis reference:** Section 3.4, Step 5  
+**Purpose:** Full COCO val2017 evaluation of all retained ingredients. Records per-class
+AP values that feed directly into the RQ1 hypothesis test (H1).
 
-**Required Inputs:**
-- `results/phase4_soup_results.json` from Phase 4
-
-**Command (via Master Orchestrator):**
+**Command:**
 ```bash
-python yolof_soup/run_phases_2b_to_7.py --phase 4b
+python yolof_soup/experiments/ingredient_quality_audit.py \
+  --phase2-output-dir output/soup_exps/ingridients-refined \
+  --results-dir results \
+  --outlier-threshold 3.0
 ```
 
-**Command (Direct Execution):**
+**Outputs:**
+- `results/ingredient_quality_audit_report.json`
+- `results/ingredient_quality_audit_summary.txt`
+
+**Expected runtime:** 15–30 min
+
+---
+
+### Step 6 — LMC Barriers + Hessian Traces (MV1, MV2)
+
+**Thesis reference:** Section 3.5.2, RQ2/H2  
+**Purpose:** Compute per-component loss landscape geometry to justify the
+tri-component merging formulation (IV1):
+
+- **MV1:** LMC barrier `B_c = max_α L_c((1−α)θA + αθB) − [L_c(θA) + L_c(θB)] / 2`
+  over 15 model pairs × 5 components × 21-point α grid
+- **MV2:** Hessian trace `Tr(H_c)` via Hutchinson estimator,
+  50 Rademacher vectors, 6 checkpoints × 5 components
+
+**Command:**
 ```bash
-python yolof_soup/experiments/preregistration.py \
-  --soup-results results/phase4_soup_results.json \
+python yolof_soup/experiments/lmc_hessian_analysis.py --verbose
+```
+
+**Outputs:**
+- `results/lmc_barriers.json` — Per-component barrier values (MV1)
+- `results/hessian_traces.json` — Per-component Hessian traces (MV2)
+- `results/lmc_hessian_report.txt` — Text summary
+
+**Expected runtime:** 45–90 min
+
+---
+
+### Step 7 — Merging Conditions C1–C6 + Greedy Baselines
+
+**Thesis reference:** Section 3.3.2  
+**Purpose:** Construct and evaluate all soup variants. This step covers every
+merging condition in the conceptual framework plus the greedy baselines:
+
+| Script | Conditions | IV1 | IV2 |
+|---|---|---|---|
+| `merge_conditions.py` | C1–C6 | Absent/Present | Uniform/Dirichlet/Fisher/Learned |
+| `merge_greedy.py` | Greedy (Wortsman 2022 baseline) | Global | — |
+| `merge_tricomponent_greedy.py` | Tri-component greedy | Per-component | — |
+
+**Commands:**
+```bash
+# All six merging conditions (C1–C6) — primary thesis experiment
+python yolof_soup/experiments/merge_conditions.py --verbose
+
+# Standard greedy soup baseline (Wortsman et al. 2022)
+python yolof_soup/experiments/merge_greedy.py --verbose
+
+# Tri-component greedy baseline
+python yolof_soup/experiments/merge_tricomponent_greedy.py --verbose
+```
+
+**Or run via coefficient strategy comparison (C3–C6 head-to-head):**
+```bash
+python yolof_soup/experiments/merge_coefficient_strategies.py --verbose
+```
+
+**Outputs:**
+- `results/merge_conditions_results.json` — mAP for C1–C6 on COCO val2017
+- `results/merge_greedy_results.json` — Greedy soup mAP
+- `results/merge_tricomponent_greedy_results.json` — Tri-component greedy mAP
+- `results/merge_coefficient_strategies_results.json` — IV2 strategy comparison
+- `checkpoints/soup_checkpoints/C1.pth` … `C6.pth` — Soup model checkpoints
+- `checkpoints/soup_checkpoints/greedy.pth`
+- `checkpoints/soup_checkpoints/tricomponent_greedy.pth`
+
+**Expected runtime:** 60–180 min total (all variants)
+
+---
+
+### Step 8 — Checkpoint Pre-Registration
+
+**Thesis reference:** Section 3.4, Step 8  
+**Purpose:** Pre-register the source soup checkpoints for D1 and D2 **before**
+any decoder-only fine-tuning begins. This prevents post-hoc selection bias (IV3).
+
+**Required inputs:**
+- `results/merge_conditions_results.json` from Step 7
+
+**Command:**
+```bash
+python yolof_soup/experiments/checkpoint_preregistration.py \
+  --soup-results results/merge_conditions_results.json \
   --output-dir results
 ```
 
-**Output Files:**
-- `results/phase4b_preregistration.json` – Selected soup ID, timestamp, rationale
+**Outputs:**
+- `results/checkpoint_preregistration.json` — Selected soup ID, SHA-256 hash, timestamp, rationale
 
-**Expected Runtime:** < 1 minute
-
-**Options:**
-- `--soup-results`: Path to Phase 4 soup results (default: `results/phase4_soup_results.json`)
-- `--output-dir`: Results output directory (default: `results`)
+**Expected runtime:** < 1 min
 
 ---
 
-### **Phase 5a & 5b: Decoder Fine-Tuning (USER-MANAGED)**
+### Steps 9–10 — Decoder Fine-Tuning D1, D2, C3 *(manual)*
 
-**⚠️ You run these manually.** See [../YOLOF_SOUP_QUICK_REFERENCE.md](../YOLOF_SOUP_QUICK_REFERENCE.md#phase-5-decoder-fine-tuning) for instructions.
+**Thesis reference:** Section 3.4, Steps 9–10  
+**Purpose:** Fine-tune the decoder (cls_branch, reg_branch, object_pred only;
+backbone + encoder frozen) initialised from three sources:
 
-**What Happens:**
-1. **Phase 5a:** Fine-tune two best single ingredients (heads only) → `D1_checkpoint.pth`, `D2_checkpoint.pth`
-2. **Phase 5b:** Fine-tune best learned soup (heads only) → `C3_checkpoint.pth`
+| Run ID | Source Checkpoint | GPU |
+|---|---|---|
+| D1 | Best of C1–C2 (component uniform soup) | RTX 5070 Ti |
+| D2 | Best of C3–C6 (best learned soup, pre-registered in Step 8) | RTX 5070 Ti |
+| C3 | Full three-stage pipeline (Step 7 + fine-tune) | RTX 5090 |
 
-**Inputs Needed:**
-- Best ingredient from Phase 2b audit
-- Second-best ingredient from Phase 2b
-- Best learned soup from Phase 4b pre-registration
-
-**Expected Runtime:** 2–4 hours total
-
----
-
-### **Phase 6: Archive & Experiment Summary**
-
-**Purpose:** Archive all results, compute file hashes, generate final experiment summary.
-
-**Required Inputs:**
-- All outputs from Phases 2b, 3, 4, 4b, 5a, 5b
-
-**Command (via Master Orchestrator):**
+**Command:**
 ```bash
-python yolof_soup/run_phases_2b_to_7.py --phase 6 --after-user-phase-5
+python yolof_soup/experiments/decoder_finetune.py \
+  --run-id D1 \
+  --source-checkpoint checkpoints/soup_checkpoints/C2.pth \
+  --results-dir results
+
+python yolof_soup/experiments/decoder_finetune.py \
+  --run-id D2 \
+  --source-checkpoint checkpoints/soup_checkpoints/<best_of_C3_C6>.pth \
+  --results-dir results
+
+python yolof_soup/experiments/decoder_finetune.py \
+  --run-id C3 \
+  --source-checkpoint checkpoints/soup_checkpoints/<best_of_C3_C6>.pth \
+  --results-dir results
 ```
 
-**Command (Direct Execution):**
+**Outputs:**
+- `output/D1_checkpoint.pth`
+- `output/D2_checkpoint.pth`
+- `output/C3_checkpoint.pth`
+
+**Expected runtime:** 2–4 hours total
+
+---
+
+### Step 11 — Hypothesis Tests RQ1–RQ4
+
+**Thesis reference:** Section 3.5  
+**Purpose:** Run all statistical tests to produce the Summary Decision Table (Table 3.3).
+
+| Hypothesis | Test | Input |
+|---|---|---|
+| H1 — Soup > best individual (RQ1) | Paired t-test + Wilcoxon, 80 per-class APs | `merge_conditions_results.json` |
+| H2 — Component structure matters (RQ2) | RM ANOVA + Tukey HSD on LMC barriers + Hessian traces | `lmc_barriers.json`, `hessian_traces.json` |
+| H3 — IV2 coefficient strategy matters (RQ3) | One-way RM ANOVA across C3–C6 | `merge_coefficient_strategies_results.json` |
+| H4 — Fine-tuning improves learned soup (RQ4) | Paired t-tests D1 vs D2, M5 vs M6 | `D1/D2/C3` results |
+
+**Command:**
 ```bash
-python yolof_soup/experiments/archive_and_summary.py \
+python yolof_soup/experiments/hypothesis_tests.py \
   --results-dir results \
-  --output-dir results/archive
+  --output-dir results \
+  --alpha 0.05
 ```
 
-**Output Files:**
-- `results/experiment_summary.json` – Complete experiment metadata + SHA-256 hashes
-- `results/experiment_lineage.txt` – Data provenance and dependencies
-- `results/archive/` – Compressed archive of all outputs
+**Outputs:**
+- `results/hypothesis_tests.json` — p-values, effect sizes, 95% CIs for all tests
+- `results/hypothesis_tests_report.txt` — Formatted decision table
+- `results/summary_decision_table.csv` — Table 3.3 (Hypothesis | Test | Result | Decision | Interpretation)
 
-**Expected Runtime:** 5–10 minutes
-
-**Options:**
-- `--results-dir`: Results directory to archive (default: `results`)
-- `--output-dir`: Archive output directory (default: `results/archive`)
-- `--compress`: Create .tar.gz archive (boolean flag)
+**Expected runtime:** 10–20 min
 
 ---
 
-### **Phase 7: Statistical Analysis & Hypothesis Testing**
+### Step 12 — COCO test-dev2017 Final Evaluation
 
-**Purpose:** Run 12 hypothesis tests across RQ1-RQ4 to validate model soup benefits.
+**Thesis reference:** Section 3.4, Step 12  
+**Purpose:** Submit the best overall model to the COCO evaluation server for the
+unbiased headline mAP reported in Findings (Chapter 4). This is the only step
+that touches the held-out test-dev2017 split.
 
-**Required Inputs:**
-- All outputs from Phases 2b-6
+**Models evaluated:** best of {C1–C6, greedy, tricomponent greedy, D1, D2, C3}
 
-**Command (via Master Orchestrator):**
+**Command:**
 ```bash
-python yolof_soup/run_phases_2b_to_7.py --phase 7 --after-user-phase-5
+python yolof_soup/experiments/coco_testdev_eval.py \
+  --checkpoint checkpoints/soup_checkpoints/<best_model>.pth \
+  --output-dir results/coco_testdev
 ```
 
-**Command (Direct Execution):**
-```bash
-python yolof_soup/experiments/statistical_analysis.py \
-  --results-dir results \
-  --output-dir results
-```
+**Outputs:**
+- `results/coco_testdev/detections_test-dev2017_<model>_results.json` — Submission file
+- `results/coco_testdev/final_eval_report.txt` — mAP@0.5, mAP@0.5:0.95, per-class AP
 
-**Output Files:**
-- `results/phase7_hypothesis_tests.json` – Test results: p-values, effect sizes, 95% CIs
-- `results/phase7_statistical_report.txt` – Formatted test report with conclusions
-
-**Expected Runtime:** 10–20 minutes
-
-**Options:**
-- `--results-dir`: Results directory (default: `results`)
-- `--output-dir`: Output directory (default: `results`)
-- `--alpha`: Significance level (default: 0.05)
+**Expected runtime:** 30–60 min
 
 ---
 
-## Complete Execution Sequence
+## Smoke & Integration Checks
 
-### **Option A: Fully Automated (You wait for user Phase 5)**
+Run these at any time to verify the pipeline end-to-end on a mini-dataset
+without requiring full GPU time:
 
 ```bash
-# Terminal 1: Run phases 2b-4b automatically
-cd /home/nisalperera/YOLOF
-python yolof_soup/run_phases_2b_to_7.py --run-all
+# Lightweight smoke check (CPU-compatible, ~2 min)
+python yolof_soup/experiments/smoke_integration.py
 
-# Expected time: ~1-2 hours
-# Outputs: Phases 2b, 3, 4, 4b results
-
-# [YOU COMPLETE PHASES 5a & 5b MANUALLY HERE]
-
-# Terminal 1: Resume with phases 6-7
-python yolof_soup/run_phases_2b_to_7.py --phase 6,7 --after-user-phase-5
-
-# Expected time: ~30 minutes
-# Outputs: Archive and statistical analysis
+# Full integration run on 10-image COCO mini-subset
+python yolof_soup/experiments/pipeline_integration.py --mini
 ```
 
-### **Option B: Manual Phase-by-Phase**
+---
+
+## Full Manual Execution Sequence
 
 ```bash
 cd /home/nisalperera/YOLOF
 
-# Phase 2b: Audit ingredients
-python yolof_soup/experiments/quality_audit.py
+# Step 2b — Pilot divergence check
+python yolof_soup/experiments/ingredient_quality_audit.py
 
-# Phase 3: Measure loss landscape
-python yolof_soup/experiments/loss_landscape.py --verbose
+# Step 3 — Diversity analysis
+python yolof_soup/experiments/ingredient_diversity_analysis.py
 
-# Phase 4: Construct soups
-python yolof_soup/experiments/soup_construction.py --verbose
+# [Step 4 — Manual review]
 
-# Phase 4b: Pre-register best soup
-python yolof_soup/experiments/preregistration.py
+# Step 5 — Full quality audit
+python yolof_soup/experiments/ingredient_quality_audit.py
 
-# [USER RUNS 5a & 5b]
+# Step 6 — LMC + Hessian
+python yolof_soup/experiments/lmc_hessian_analysis.py --verbose
 
-# Phase 6: Archive results
-python yolof_soup/experiments/archive_and_summary.py
+# Step 7 — All merging conditions
+python yolof_soup/experiments/merge_conditions.py --verbose
+python yolof_soup/experiments/merge_greedy.py --verbose
+python yolof_soup/experiments/merge_tricomponent_greedy.py --verbose
+python yolof_soup/experiments/merge_coefficient_strategies.py --verbose
 
-# Phase 7: Statistical analysis
-python yolof_soup/experiments/statistical_analysis.py
+# Step 8 — Pre-registration
+python yolof_soup/experiments/checkpoint_preregistration.py
+
+# [Steps 9–10 — Decoder fine-tuning D1, D2, C3 — manual]
+
+# Step 11 — Hypothesis tests
+python yolof_soup/experiments/hypothesis_tests.py
+
+# Step 12 — Final COCO test-dev eval
+python yolof_soup/experiments/coco_testdev_eval.py
 ```
 
 ---
 
-## Monitoring Execution
+## Monitoring
 
-### **Check if phases are running:**
 ```bash
+# Check running processes
 ps aux | grep python.*yolof_soup
-```
 
-### **View live logs:**
-```bash
-tail -f logs/phase_2b.log          # Phase 2b logs
-tail -f logs/phase_3.log           # Phase 3 logs
-# ... and so on
-```
+# Tail live logs
+tail -f logs/experiment.log
 
-### **Check disk space (checkpoints + results are large):**
-```bash
-du -sh checkpoints/ results/
+# DVC pipeline status
+dvc status
+
+# Check disk usage
+du -sh output/ results/ logs/
 ```
 
 ---
 
 ## Troubleshooting
 
-### **Phase 2b fails: "Checkpoint not found"**
-- Verify: `ls -lh checkpoints/output/`
-- Should show exactly 6 files: `L1_checkpoint.pth` through `C2_checkpoint.pth`
-- See [../PHASE_2A_CHECKPOINT_STRUCTURE.md](../PHASE_2A_CHECKPOINT_STRUCTURE.md)
+### `Checkpoint not found`
+```bash
+ls -lh output/soup_exps/ingridients-refined/
+# Expected: L1..L4, C1, C2 checkpoint files
+```
 
-### **Any phase fails: "CUDA out of memory"**
+### `CUDA out of memory`
 ```bash
 export THESIS_BATCH_SIZE_PER_GPU=8
-python yolof_soup/run_phases_2b_to_7.py --phase 2b
+python -m yolof_soup.pipeline_runner --stage 7
 ```
 
-### **Run single phase again after failure:**
+### Re-run a failed stage
 ```bash
-# All phases create output files that can be re-used
-# Just re-run the failed phase:
-python yolof_soup/run_phases_2b_to_7.py --phase 3
+# Via DVC (recommended — uses caching)
+dvc repro <stage_name>
+
+# Via pipeline runner
+python -m yolof_soup.pipeline_runner --stage 6
 ```
 
-### **View detailed config:**
+### Show current run configuration
 ```bash
-python yolof_soup/run_phases_2b_to_7.py --show-config
+python -m yolof_soup.pipeline_runner --show-config
 ```
 
 ---
 
 ## Environment Variables
 
-Override defaults by setting before running:
-
 ```bash
-# Override batch size per GPU
-export THESIS_BATCH_SIZE_PER_GPU=8
-
-# Override GPU count
+export THESIS_ROOT=/home/nisalperera/YOLOF
 export THESIS_NUM_GPUS=1
-
-# Override project root
-export THESIS_ROOT=/path/to/project
-
-# Override compute device
+export THESIS_BATCH_SIZE_PER_GPU=16
 export THESIS_DEVICE=cuda
-
-# Then run phases:
-python yolof_soup/run_phases_2b_to_7.py --phase 2b
+export THESIS_N_INGREDIENTS=6
+export COCO_ROOT=/path/to/coco
 ```
 
 ---
 
 ## Output Directory Structure
 
-After all phases complete:
-
 ```
-/home/nisalperera/YOLOF/results/
-├── phase2b_audit_report.json
-├── phase2b_audit_summary.txt
-├── phase3_lmc_results.json
-├── phase3_hessian_traces.json
-├── phase3_landscape_report.txt
-├── phase4_soup_results.json
-├── phase4_soup_report.txt
-├── phase4b_preregistration.json
-├── phase6_experiment_summary.json
-├── phase6_experiment_lineage.txt
-├── phase7_hypothesis_tests.json
-└── phase7_statistical_report.txt
-
-/home/nisalperera/YOLOF/checkpoints/
-├── output/                    (Phase 2a ingredients)
-│   ├── L1_checkpoint.pth
-│   ├── L2_checkpoint.pth
-│   ...
-└── soup_checkpoints/          (Phase 4 soup models)
-    ├── M1.pth
-    ├── M2.pth
-    ├── M3.pth
-    └── M4.pth
-
-/home/nisalperera/YOLOF/logs/
-├── phase_2b.log
-├── phase_3.log
-├── phase_4.log
-├── phase_4b.log
-├── phase_6.log
-└── phase_7.log
+/home/nisalperera/YOLOF/
+├── output/
+│   └── soup_exps/ingridients-refined/   # Phase 2a ingredient checkpoints
+│       ├── L1_checkpoint.pth
+│       ├── L2_checkpoint.pth
+│       ├── L3_checkpoint.pth
+│       ├── L4_checkpoint.pth
+│       ├── C1_checkpoint.pth
+│       └── C2_checkpoint.pth
+│
+├── checkpoints/
+│   └── soup_checkpoints/                # Step 7 soup model outputs
+│       ├── C1.pth  (global uniform)
+│       ├── C2.pth  (component uniform)
+│       ├── C3.pth  (Dirichlet search)
+│       ├── C4.pth  (Fisher-weighted)
+│       ├── C5.pth  (Learned M5)
+│       ├── C6.pth  (Learned M6)
+│       ├── greedy.pth
+│       └── tricomponent_greedy.pth
+│
+├── results/
+│   ├── ingredient_quality_audit_report.json       # Step 5
+│   ├── ingredient_diversity_report.json           # Step 3
+│   ├── lmc_barriers.json                          # Step 6 (MV1)
+│   ├── hessian_traces.json                        # Step 6 (MV2)
+│   ├── merge_conditions_results.json              # Step 7 (C1–C6)
+│   ├── merge_greedy_results.json                  # Step 7 (greedy)
+│   ├── merge_tricomponent_greedy_results.json     # Step 7 (tri-component greedy)
+│   ├── merge_coefficient_strategies_results.json  # Step 7 (IV2 comparison)
+│   ├── checkpoint_preregistration.json            # Step 8
+│   ├── hypothesis_tests.json                      # Step 11
+│   ├── summary_decision_table.csv                 # Step 11 (Table 3.3)
+│   └── coco_testdev/
+│       └── final_eval_report.txt                  # Step 12
+│
+└── logs/
+    └── experiment.log
 ```
 
 ---
 
-## Summary
+## Timing Reference
 
-| Phase | Command | Time | Status |
-|-------|---------|------|--------|
-| 2b | `python yolof_soup/run_phases_2b_to_7.py --phase 2b` | 15–30 min | Automated |
-| 3 | `python yolof_soup/run_phases_2b_to_7.py --phase 3` | 45–90 min | Automated |
-| 4 | `python yolof_soup/run_phases_2b_to_7.py --phase 4` | 60–120 min | Automated |
-| 4b | `python yolof_soup/run_phases_2b_to_7.py --phase 4b` | < 1 min | Automated |
-| 5a/5b | (Manual) | 2–4 hr | User-managed |
-| 6 | `python yolof_soup/run_phases_2b_to_7.py --phase 6 --after-user-phase-5` | 5–10 min | Automated |
-| 7 | `python yolof_soup/run_phases_2b_to_7.py --phase 7 --after-user-phase-5` | 10–20 min | Automated |
+| Step | Script | Runtime | Mode |
+|---|---|---|---|
+| 2b | `ingredient_quality_audit.py` | 15–30 min | Automated |
+| 3 | `ingredient_diversity_analysis.py` | 10–20 min | Automated |
+| 4 | *(manual review)* | — | Manual |
+| 5 | `ingredient_quality_audit.py` | 15–30 min | Automated |
+| 6 | `lmc_hessian_analysis.py` | 45–90 min | Automated |
+| 7a | `merge_conditions.py` | 60–120 min | Automated |
+| 7b | `merge_greedy.py` | 20–40 min | Automated |
+| 7c | `merge_tricomponent_greedy.py` | 20–40 min | Automated |
+| 7d | `merge_coefficient_strategies.py` | 30–60 min | Automated |
+| 8 | `checkpoint_preregistration.py` | < 1 min | Automated |
+| 9–10 | `decoder_finetune.py` (D1, D2, C3) | 2–4 hr | Manual |
+| 11 | `hypothesis_tests.py` | 10–20 min | Automated |
+| 12 | `coco_testdev_eval.py` | 30–60 min | Automated |
 
-**Total automated time:** ~3–5 hours  
-**Total user Phase 5 time:** ~2–4 hours  
-**Total project time:** ~5–9 hours
+**Total automated time:** ~4–8 hours  
+**Total manual time (Steps 9–10):** ~2–4 hours
