@@ -1,62 +1,119 @@
 """
 RQ2 / H2 — Per-component loss landscape geometry (LMC barriers + Hessian traces)
 
-Tests (Section 3.5.2):
-  Test 1 : Repeated-measures ANOVA comparing B_backbone_encoder, B_cls_head,
-           B_reg_head, B_objectness_module across 15 model pairs.
-           If Mauchly's test is violated → Greenhouse-Geisser correction.
-           Tukey HSD post-hoc (and directed Bonferroni-corrected contrasts).
-           Also: paired two-tailed t-test B_cls_head vs B_reg_head (primary H2 criterion).
+Expected barrier JSON schema:
+{
+  "0": {
+    "pair_0102": {
+      "backbone_encoder": ...,
+      "cls_head": ...,
+      "reg_head": ...,
+      "shared": ...,
+      "full_model": ...
+    },
+    ...
+    # 15 pairs
+  },
+  "1": { ... 15 pairs ... },
+  ...
+  "5": { ... 15 pairs ... }
+}
 
-  Test 2 : Pearson correlation between per-component barrier magnitude and
-           per-component averaging gain (Δ mAP vs Condition 1), Bonferroni-corrected.
-
-  Test 3 : Repeated-measures ANOVA comparing per-component Hessian traces
-           across the 6 ingredient models.
-
-Input files (produced by loss_landscape.py):
-  results/phase4_barrier_results.json
-    Structure:
-      {
-        "pair_barriers": [
-          {
-            "pair": [i, j],
-            "backbone_encoder": <float>,   # averaged over 6 base conditions
-            "cls_head":         <float>,
-            "reg_head":         <float>,
-            "objectness_module":<float>,
-            "full_model":       <float>
-          },
-          ...  # 15 entries
-        ],
-        "hessian_traces": {
-          "L1": {"backbone_encoder": f, "cls_head": f, "reg_head": f, "objectness_module": f},
-          ...  # 6 ingredient models
-        },
-        "component_gains": {
-          "cls_head": <float>,   # Δ mAP of component-averaging vs C1
-          "reg_head": <float>,
-          "objectness_module": <float>
-        }
-      }
+This script:
+1. Loads raw base-conditioned barrier data (6 bases × 15 pairs = 90 rows)
+2. Normalizes 'shared' -> 'objectness_module'
+3. Produces a raw audit table
+4. Averages across the 6 base conditions for each pair to obtain 15 pair-level rows
+5. Runs RM-ANOVA on the 15 pair-level rows
+6. Reports full-model barriers descriptively only
 """
 
 import json
 import pathlib
+from collections import defaultdict
+
 import numpy as np
 from scipy import stats
 
 RESULTS_DIR = pathlib.Path("results")
 BARRIER_FILE = RESULTS_DIR / "phase4_barrier_results.json"
+RAW_AUDIT_FILE = RESULTS_DIR / "h2_barrier_raw_90rows.json"
+PAIR_AVG_FILE = RESULTS_DIR / "h2_barrier_pair_averaged_15rows.json"
+SUMMARY_FILE = RESULTS_DIR / "h2_rq2_results.json"
+
 COMPONENTS = ["backbone_encoder", "cls_head", "reg_head", "objectness_module"]
+FULL_MODEL_KEY = "full_model"
 ALPHA = 0.05
+EXPECTED_BASES = 6
+EXPECTED_PAIRS = 15
+
+
+def normalize_pair_record(rec: dict) -> dict:
+    obj_val = rec.get("objectness_module", rec.get("shared"))
+    if obj_val is None:
+        raise KeyError("Expected 'objectness_module' or 'shared' in pair record.")
+    return {
+        "backbone_encoder": float(rec["backbone_encoder"]),
+        "cls_head": float(rec["cls_head"]),
+        "reg_head": float(rec["reg_head"]),
+        "objectness_module": float(obj_val),
+        "full_model": float(rec["full_model"]),
+    }
+
+
+def load_raw_barrier_data(path: pathlib.Path):
+    with open(path) as f:
+        data = json.load(f)
+
+    if len(data) != EXPECTED_BASES:
+        raise ValueError(f"Expected {EXPECTED_BASES} base-model groups, found {len(data)}.")
+
+    raw_rows = []
+    pair_to_rows = defaultdict(list)
+
+    for base_key, pair_dict in data.items():
+        if len(pair_dict) != EXPECTED_PAIRS:
+            raise ValueError(
+                f"Base {base_key} should contain {EXPECTED_PAIRS} pairs, found {len(pair_dict)}."
+            )
+
+        for pair_name, rec in pair_dict.items():
+            norm = normalize_pair_record(rec)
+            row = {
+                "base_model": str(base_key),
+                "pair": pair_name,
+                **norm,
+            }
+            raw_rows.append(row)
+            pair_to_rows[pair_name].append(row)
+
+    if len(raw_rows) != EXPECTED_BASES * EXPECTED_PAIRS:
+        raise ValueError(
+            f"Expected {EXPECTED_BASES * EXPECTED_PAIRS} raw rows, found {len(raw_rows)}."
+        )
+
+    if len(pair_to_rows) != EXPECTED_PAIRS:
+        raise ValueError(f"Expected {EXPECTED_PAIRS} unique pairs, found {len(pair_to_rows)}.")
+
+    return raw_rows, pair_to_rows
+
+
+def average_pairs_across_bases(pair_to_rows):
+    pair_avg_rows = []
+    for pair_name, rows in sorted(pair_to_rows.items()):
+        if len(rows) != EXPECTED_BASES:
+            raise ValueError(f"{pair_name} should have {EXPECTED_BASES} base-conditioned rows.")
+        avg_row = {
+            "pair": pair_name,
+            "n_bases": len(rows),
+        }
+        for key in COMPONENTS + [FULL_MODEL_KEY]:
+            avg_row[key] = float(np.mean([r[key] for r in rows]))
+        pair_avg_rows.append(avg_row)
+    return pair_avg_rows
 
 
 def greenhouse_geisser_epsilon(data: np.ndarray) -> float:
-    """
-    Compute Greenhouse-Geisser epsilon from an (n_subjects × k_conditions) array.
-    Follows the standard covariance-matrix formula.
-    """
     n, k = data.shape
     grand_mean = data.mean()
     row_means = data.mean(axis=1, keepdims=True)
@@ -71,12 +128,7 @@ def greenhouse_geisser_epsilon(data: np.ndarray) -> float:
     return float(np.clip(epsilon, 1 / (k - 1), 1.0))
 
 
-def rm_anova_manual(data: np.ndarray, component_names: list):
-    """
-    Manual repeated-measures ANOVA.
-    data: shape (n_subjects, k_conditions)
-    Returns F, p, eta_sq, and GG-corrected p.
-    """
+def rm_anova_manual(data: np.ndarray):
     n, k = data.shape
     grand_mean = data.mean()
     ss_between = n * np.sum((data.mean(axis=0) - grand_mean) ** 2)
@@ -98,123 +150,96 @@ def rm_anova_manual(data: np.ndarray, component_names: list):
     df_gg_error = df_error * epsilon
     p_gg = stats.f.sf(F, df_gg_between, df_gg_error)
 
-    print(f"  F({df_between:.2f}, {df_error:.2f}) = {F:.4f}, p = {p:.4f}")
-    print(f"  GG epsilon = {epsilon:.4f}  →  F({df_gg_between:.2f}, {df_gg_error:.2f}), p_GG = {p_gg:.4f}")
-    print(f"  η² = {eta_sq:.4f}")
-    return {"F": F, "p": p, "p_gg": p_gg, "eta_sq": eta_sq, "epsilon": epsilon}
+    return {
+        "F": float(F),
+        "p": float(p),
+        "p_gg": float(p_gg),
+        "eta_sq": float(eta_sq),
+        "epsilon": float(epsilon),
+        "df_between": float(df_between),
+        "df_error": float(df_error),
+        "df_gg_between": float(df_gg_between),
+        "df_gg_error": float(df_gg_error),
+    }
 
 
-def tukey_hsd_posthoc(data: np.ndarray, labels: list, alpha: float = ALPHA):
-    """Approximate Tukey HSD for RM design (conservative; use pingouin if available)."""
-    try:
-        import pingouin as pg
-        import pandas as pd
-        n, k = data.shape
-        long = pd.DataFrame({
-            "subject": np.tile(np.arange(n), k),
-            "condition": np.repeat(labels, n),
-            "value": data.flatten(order="F"),
+def posthoc_pairwise_paired(data: np.ndarray, labels: list[str]):
+    from itertools import combinations
+
+    pairs = list(combinations(range(len(labels)), 2))
+    out = []
+    m = len(pairs)
+    for i, j in pairs:
+        diff = data[:, j] - data[:, i]
+        t, p = stats.ttest_rel(data[:, j], data[:, i])
+        out.append({
+            "A": labels[i],
+            "B": labels[j],
+            "t": float(t),
+            "p": float(p),
+            "p_bonferroni": float(min(p * m, 1.0)),
+            "mean_diff": float(diff.mean()),
         })
-        ph = pg.pairwise_tests(dv="value", within="condition",
-                               subject="subject", data=long, padjust="holm")
-        print(ph.to_string())
-        return ph
-    except ImportError:
-        from statsmodels.stats.multicomp import pairwise_tukeyhsd
-        n, k = data.shape
-        flat_vals = data.flatten(order="F")
-        flat_labels = np.repeat(labels, n)
-        res = pairwise_tukeyhsd(flat_vals, flat_labels, alpha=alpha)
-        print(res)
-        return res
+    return out
 
 
 def main():
-    with open(BARRIER_FILE) as f:
-        barrier_data = json.load(f)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    pairs = barrier_data["pair_barriers"]   # list of 15 dicts
-    assert len(pairs) == 15, f"Expected 15 pairs, got {len(pairs)}"
+    raw_rows, pair_to_rows = load_raw_barrier_data(BARRIER_FILE)
+    pair_avg_rows = average_pairs_across_bases(pair_to_rows)
 
-    # Build (15 × 4) matrix for RM-ANOVA
-    barrier_matrix = np.array(
-        [[p[c] for c in COMPONENTS] for p in pairs]
-    )  # shape (15, 4)
+    with open(RAW_AUDIT_FILE, "w") as f:
+        json.dump(raw_rows, f, indent=2)
+    with open(PAIR_AVG_FILE, "w") as f:
+        json.dump(pair_avg_rows, f, indent=2)
 
-    # ------------------------------------------------------------------
-    # Test 1a: RM-ANOVA across 4 components
-    # ------------------------------------------------------------------
-    print("\n" + "="*60)
-    print("TEST 1a — RM-ANOVA: barrier across 4 components (15 pairs)")
-    print("="*60)
-    anova_res = rm_anova_manual(barrier_matrix, COMPONENTS)
+    barrier_matrix = np.array([
+        [row[c] for c in COMPONENTS]
+        for row in pair_avg_rows
+    ])  # shape (15, 4)
 
-    print("\n--- Post-hoc (Tukey / Holm) ---")
-    tukey_hsd_posthoc(barrier_matrix, COMPONENTS)
+    anova_res = rm_anova_manual(barrier_matrix)
+    posthoc_res = posthoc_pairwise_paired(barrier_matrix, COMPONENTS)
 
-    # ------------------------------------------------------------------
-    # Test 1b: Directed paired t-test B_cls_head vs B_reg_head (primary H2 criterion)
-    # ------------------------------------------------------------------
     cls_barriers = barrier_matrix[:, COMPONENTS.index("cls_head")]
     reg_barriers = barrier_matrix[:, COMPONENTS.index("reg_head")]
-    t_cls_reg, p_cls_reg = stats.ttest_rel(cls_barriers, reg_barriers)
     diff_cls_reg = cls_barriers - reg_barriers
+    t_cls_reg, p_cls_reg = stats.ttest_rel(cls_barriers, reg_barriers)
     d_cls_reg = diff_cls_reg.mean() / diff_cls_reg.std(ddof=1)
 
-    print("\n" + "="*60)
-    print("TEST 1b — Paired t-test: B_cls_head vs B_reg_head")
-    print("="*60)
-    print(f"  t({len(diff_cls_reg)-1}) = {t_cls_reg:.4f}, p = {p_cls_reg:.4f}")
-    print(f"  Mean difference (cls − reg) = {diff_cls_reg.mean():+.6f}")
-    print(f"  Cohen's d = {d_cls_reg:.4f}")
-    decision_h2 = "REJECT H02" if p_cls_reg < ALPHA else "FAIL TO REJECT H02"
-    print(f"  Decision: {decision_h2}")
-
-    # ------------------------------------------------------------------
-    # Test 2: Pearson correlation barrier magnitude → averaging gain
-    # ------------------------------------------------------------------
-    print("\n" + "="*60)
-    print("TEST 2 — Pearson correlation: per-component barrier vs. averaging gain")
-    print("="*60)
-    gains = barrier_data.get("component_gains", {})
-    gain_components = [c for c in ["cls_head", "reg_head", "objectness_module"] if c in gains]
-    bonferroni_n = len(gain_components)
-    for comp in gain_components:
-        comp_barriers = barrier_matrix[:, COMPONENTS.index(comp)]
-        gain_val = gains[comp]  # scalar Δ mAP
-        # With a single scalar gain we compute correlation across pairs
-        # using the pair-level barrier already computed per pair
-        r, p_r = stats.pearsonr(comp_barriers, np.full(len(comp_barriers), gain_val))
-        p_bonf = min(p_r * bonferroni_n, 1.0)
-        print(f"  {comp}: r = {r:.4f}, p = {p_r:.4f}, p_Bonferroni = {p_bonf:.4f}")
-
-    # ------------------------------------------------------------------
-    # Test 3: RM-ANOVA on Hessian traces across 6 ingredients
-    # ------------------------------------------------------------------
-    print("\n" + "="*60)
-    print("TEST 3 — RM-ANOVA: Hessian trace across 4 components (6 ingredients)")
-    print("="*60)
-    hessian = barrier_data["hessian_traces"]  # dict model → dict component → float
-    models = list(hessian.keys())
-    hessian_matrix = np.array(
-        [[hessian[m][c] for c in COMPONENTS] for m in models]
-    )  # shape (n_models, 4)
-    rm_anova_manual(hessian_matrix, COMPONENTS)
-    print("--- Post-hoc (Tukey / Holm) ---")
-    tukey_hsd_posthoc(hessian_matrix, COMPONENTS)
-
-    # Save
-    out = RESULTS_DIR / "h2_rq2_results.json"
-    summary = {
-        "test1a_anova": anova_res,
-        "test1b_cls_vs_reg": {
-            "t": float(t_cls_reg), "p": float(p_cls_reg),
-            "cohens_d": float(d_cls_reg), "decision": decision_h2,
-        },
+    full_model_vals = np.array([row["full_model"] for row in pair_avg_rows])
+    full_model_summary = {
+        "mean": float(full_model_vals.mean()),
+        "std": float(full_model_vals.std(ddof=1)),
+        "min": float(full_model_vals.min()),
+        "max": float(full_model_vals.max()),
     }
-    with open(out, "w") as f:
-        json.dump(summary, f, indent=2, default=float)
-    print(f"\nResults saved → {out}")
+
+    summary = {
+        "input_shape": {
+            "n_raw_rows": len(raw_rows),
+            "n_unique_pairs": len(pair_avg_rows),
+            "n_bases_per_pair": EXPECTED_BASES,
+        },
+        "test1_barrier_rm_anova": anova_res,
+        "test1_posthoc": posthoc_res,
+        "test1b_cls_vs_reg": {
+            "t": float(t_cls_reg),
+            "p": float(p_cls_reg),
+            "cohens_d": float(d_cls_reg),
+            "mean_diff_cls_minus_reg": float(diff_cls_reg.mean()),
+            "decision": "REJECT H02" if p_cls_reg < ALPHA else "FAIL TO REJECT H02",
+        },
+        "full_model_descriptive_only": full_model_summary,
+    }
+
+    with open(SUMMARY_FILE, "w") as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"Saved raw audit table: {RAW_AUDIT_FILE}")
+    print(f"Saved pair-averaged table: {PAIR_AVG_FILE}")
+    print(f"Saved summary: {SUMMARY_FILE}")
 
 
 if __name__ == "__main__":
