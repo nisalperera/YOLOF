@@ -28,35 +28,68 @@ import pathlib
 import numpy as np
 from scipy import stats
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
 RESULTS_DIR = pathlib.Path("results")
 SOUP_FILE = RESULTS_DIR / "phase3_soup_results.json"
 INGREDIENT_FILE = RESULTS_DIR / "phase1_ingredient_results.json"
 N_BOOT = 10_000
 RNG_SEED = 42
-PRACTICAL_THRESHOLD = 0.5  # pp; pre-specified in §3.5.1
+PRACTICAL_THRESHOLD = 0.5
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-def bootstrap_ci(diff: np.ndarray, n_boot: int = N_BOOT, seed: int = RNG_SEED):
-    """Return (mean_diff, ci_lower, ci_upper) via percentile bootstrap."""
+def extract_ap_array(per_class_ap, expected_len=80, field_name="per_class_ap"):
+    """
+    per_class_ap is a list of [class_name, AP, AR] triples.
+    Returns a flat float array of the 80 AP values (index 1), in file order.
+    """
+    if not isinstance(per_class_ap, list):
+        raise TypeError(f"{field_name} must be a list of [class_name, AP, AR] triples.")
+
+    ap_values = []
+    class_names = []
+    for i, entry in enumerate(per_class_ap):
+        if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+            raise ValueError(
+                f"{field_name}[{i}] must be [class_name, AP, AR]; got {entry!r}"
+            )
+        class_name, ap = entry[0], entry[1]
+        if not isinstance(ap, (int, float)):
+            raise TypeError(
+                f"{field_name}[{i}] AP value must be numeric; got {type(ap)} -> {ap!r}"
+            )
+        class_names.append(class_name)
+        ap_values.append(float(ap))
+
+    arr = np.array(ap_values, dtype=float)
+
+    if expected_len is not None and len(arr) != expected_len:
+        raise ValueError(
+            f"{field_name} must contain {expected_len} classes, got {len(arr)}."
+        )
+    return arr, class_names
+
+
+def score_entry(entry):
+    if "map50_95" in entry and entry["map50_95"] is not None:
+        return float(entry["map50_95"])
+    ap_arr, _ = extract_ap_array(entry["per_class_ap"])
+    return float(ap_arr.mean())
+
+
+def bootstrap_ci(diff, n_boot=N_BOOT, seed=RNG_SEED):
     rng = np.random.default_rng(seed)
-    boot = np.array([rng.choice(diff, size=len(diff), replace=True).mean()
-                     for _ in range(n_boot)])
+    boot = np.array([
+        rng.choice(diff, size=len(diff), replace=True).mean()
+        for _ in range(n_boot)
+    ])
     return diff.mean(), *np.percentile(boot, [2.5, 97.5])
 
 
-def cohens_d_paired(diff: np.ndarray) -> float:
+def cohens_d_paired(diff):
     return diff.mean() / diff.std(ddof=1)
 
 
-def run_comparison(name: str, ap_a: np.ndarray, ap_b: np.ndarray):
-    """Print all statistics for one comparison (B − A)."""
-    assert len(ap_a) == 80 and len(ap_b) == 80, "Arrays must have length 80."
+def run_comparison(name, ap_a, ap_b):
+    assert len(ap_a) == 80 and len(ap_b) == 80
     diff = ap_b - ap_a
 
     t, p = stats.ttest_rel(ap_b, ap_a)
@@ -86,39 +119,43 @@ def run_comparison(name: str, ap_a: np.ndarray, ap_b: np.ndarray):
     }
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 def main():
-    # Load soup results
     with open(SOUP_FILE) as f:
         soup = json.load(f)
 
-    c1 = np.array(soup["condition_1"]["per_class_ap"])
-    c2 = np.array(soup["condition_2"]["per_class_ap"])
+    c1, class_names_ref = extract_ap_array(soup["condition_1"]["per_class_ap"], field_name="condition_1.per_class_ap")
+    c2, class_names_c2 = extract_ap_array(soup["condition_2"]["per_class_ap"], field_name="condition_2.per_class_ap")
 
-    # Best of Conditions 3–6 by overall mAP50:95
-    learned_conditions = {
-        k: np.array(soup[k]["per_class_ap"])
-        for k in ["condition_3", "condition_4", "condition_5", "condition_6"]
-    }
-    best_learned_key = max(
-        learned_conditions,
-        key=lambda k: soup[k].get("map50_95", np.array(soup[k]["per_class_ap"]).mean()),
-    )
+    # Sanity check: class order must match across conditions for paired tests to be valid
+    if class_names_ref != class_names_c2:
+        raise ValueError(
+            "Class order mismatch between condition_1 and condition_2 per_class_ap arrays. "
+            "Paired tests require identical category order across all conditions."
+        )
+
+    learned_conditions = {}
+    for k in ["condition_3", "condition_4", "condition_5", "condition_6"]:
+        arr, names = extract_ap_array(soup[k]["per_class_ap"], field_name=f"{k}.per_class_ap")
+        if names != class_names_ref:
+            raise ValueError(f"Class order mismatch in {k}.per_class_ap vs condition_1.")
+        learned_conditions[k] = arr
+
+    best_learned_key = max(learned_conditions, key=lambda k: score_entry(soup[k]))
     best_learned = learned_conditions[best_learned_key]
     print(f"Best learned condition: {best_learned_key}")
 
-    # Load ingredient results
     with open(INGREDIENT_FILE) as f:
         ingredients = json.load(f)
 
-    best_ingredient_key = max(
-        ingredients,
-        key=lambda k: ingredients[k].get("map50_95",
-                                          np.array(ingredients[k]["per_class_ap"]).mean()),
+    best_ingredient_key = max(ingredients, key=lambda k: score_entry(ingredients[k]))
+    best_ingredient, names_ing = extract_ap_array(
+        ingredients[best_ingredient_key]["per_class_ap"],
+        field_name=f"{best_ingredient_key}.per_class_ap"
     )
-    best_ingredient = np.array(ingredients[best_ingredient_key]["per_class_ap"])
+    if names_ing != class_names_ref:
+        raise ValueError(
+            f"Class order mismatch: {best_ingredient_key}.per_class_ap vs condition_1.per_class_ap."
+        )
     print(f"Best ingredient model : {best_ingredient_key}")
 
     results = []
@@ -129,7 +166,6 @@ def main():
         best_ingredient, best_learned,
     ))
 
-    # Save summary
     out = RESULTS_DIR / "h1_rq1_results.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:

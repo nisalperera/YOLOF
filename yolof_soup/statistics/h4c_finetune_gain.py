@@ -22,6 +22,11 @@ Input file:
   results/phase4_finetune_results.json  (keys: D1, D2, C3 → per_class_ap + map50_95)
 """
 
+"""
+RQ4 / H4c — Post-merge fine-tuning gain; merge quality moderates gain (D1/D2/C3)
+per_class_ap format: [[class_name, AP, AR], ...] — AP (index 1) used, AR discarded.
+"""
+
 import json
 import pathlib
 import numpy as np
@@ -30,21 +35,42 @@ from scipy import stats
 RESULTS_DIR = pathlib.Path("results")
 SOUP_FILE = RESULTS_DIR / "phase3_soup_results.json"
 FINETUNE_FILE = RESULTS_DIR / "phase4_finetune_results.json"
-BASELINE_MAP = 37.7   # published YOLOF-R50 mAP₅₀:₉₅ (Chen et al., 2021)
+BASELINE_MAP = 37.7
 N_BOOT = 10_000
 RNG_SEED = 42
 ALPHA = 0.05
 
 
-def bootstrap_ci_mean(arr: np.ndarray, seed: int = RNG_SEED) -> tuple:
+def extract_ap_array(per_class_ap, expected_len=80, field_name="per_class_ap"):
+    if not isinstance(per_class_ap, list):
+        raise TypeError(f"{field_name} must be a list of [class_name, AP, AR] triples.")
+    ap_values, class_names = [], []
+    for i, entry in enumerate(per_class_ap):
+        if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+            raise ValueError(f"{field_name}[{i}] must be [class_name, AP, AR]; got {entry!r}")
+        class_name, ap = entry[0], entry[1]
+        if not isinstance(ap, (int, float)):
+            raise TypeError(f"{field_name}[{i}] AP must be numeric; got {type(ap)} -> {ap!r}")
+        class_names.append(class_name)
+        ap_values.append(float(ap))
+    arr = np.array(ap_values, dtype=float)
+    if expected_len is not None and len(arr) != expected_len:
+        raise ValueError(f"{field_name} must contain {expected_len} classes, got {len(arr)}.")
+    return arr, class_names
+
+
+def check_class_order(names_a, names_b, label_a, label_b):
+    if names_a != names_b:
+        raise ValueError(f"Class order mismatch between {label_a} and {label_b}.")
+
+
+def bootstrap_ci_mean(arr, seed=RNG_SEED):
     rng = np.random.default_rng(seed)
-    boot = np.array([rng.choice(arr, size=len(arr), replace=True).mean()
-                     for _ in range(N_BOOT)])
+    boot = np.array([rng.choice(arr, size=len(arr), replace=True).mean() for _ in range(N_BOOT)])
     return float(np.percentile(boot, 2.5)), float(np.percentile(boot, 97.5))
 
 
-def paired_test(name: str, pre: np.ndarray, post: np.ndarray):
-    """Paired t-test + bootstrap CI on per-class AP gain (post − pre)."""
+def paired_test(name, pre, post):
     diff = post - pre
     t_val, p_val = stats.ttest_rel(post, pre)
     ci_lo, ci_hi = bootstrap_ci_mean(diff)
@@ -61,29 +87,33 @@ def paired_test(name: str, pre: np.ndarray, post: np.ndarray):
             "decision": decision, "gain_array": diff.tolist()}
 
 
+def score_entry(entry):
+    if "map50_95" in entry and entry["map50_95"] is not None:
+        return float(entry["map50_95"])
+    arr, _ = extract_ap_array(entry["per_class_ap"])
+    return float(arr.mean())
+
+
 def main():
     with open(SOUP_FILE) as f:
         soup = json.load(f)
     with open(FINETUNE_FILE) as f:
         ft = json.load(f)
 
-    c2  = np.array(soup["condition_2"]["per_class_ap"])
-    c6  = np.array(soup["condition_6"]["per_class_ap"])
-    D1  = np.array(ft["D1"]["per_class_ap"])
-    D2  = np.array(ft["D2"]["per_class_ap"])
-    C3  = np.array(ft["C3"]["per_class_ap"])
+    c2, names_c2 = extract_ap_array(soup["condition_2"]["per_class_ap"], field_name="condition_2.per_class_ap")
+    c6, names_c6 = extract_ap_array(soup["condition_6"]["per_class_ap"], field_name="condition_6.per_class_ap")
+    D1, names_D1 = extract_ap_array(ft["D1"]["per_class_ap"], field_name="D1.per_class_ap")
+    D2, names_D2 = extract_ap_array(ft["D2"]["per_class_ap"], field_name="D2.per_class_ap")
+    C3, names_C3 = extract_ap_array(ft["C3"]["per_class_ap"], field_name="C3.per_class_ap")
 
-    # Best of Conditions 3–5 (init for D2)
-    best_key = max(
-        ["condition_3", "condition_4", "condition_5"],
-        key=lambda k: soup[k].get("map50_95", np.array(soup[k]["per_class_ap"]).mean()),
-    )
-    best_c35 = np.array(soup[best_key]["per_class_ap"])
+    for names, label in [(names_c6, "condition_6"), (names_D1, "D1"), (names_D2, "D2"), (names_C3, "C3")]:
+        check_class_order(names_c2, names, "condition_2", label)
+
+    best_key = max(["condition_3", "condition_4", "condition_5"], key=lambda k: score_entry(soup[k]))
+    best_c35, names_best = extract_ap_array(soup[best_key]["per_class_ap"], field_name=f"{best_key}.per_class_ap")
+    check_class_order(names_c2, names_best, "condition_2", best_key)
     print(f"Best condition 3–5 (D2 init): {best_key}")
 
-    # ------------------------------------------------------------------
-    # Test 4 — Paired t-tests for each fine-tuning pair
-    # ------------------------------------------------------------------
     print("\n" + "="*60)
     print("TEST 4 — Post-merge fine-tuning gain (paired t-tests)")
     print("="*60)
@@ -91,49 +121,32 @@ def main():
     pB = paired_test(f"Pair B: {best_key} → D2", best_c35, D2)
     pC = paired_test("Pair C: Condition 6 (M6) → C3", c6, C3)
 
-    # ------------------------------------------------------------------
-    # Test 5 — Merge quality moderates fine-tuning gain
-    # ------------------------------------------------------------------
     print("\n" + "="*60)
     print("TEST 5 — Merge quality moderates fine-tuning gain")
     print("="*60)
-
     gainA = np.array(pA["gain_array"])
     gainB = np.array(pB["gain_array"])
     gainC = np.array(pC["gain_array"])
 
-    # Kruskal-Wallis across the three gain arrays
     kw_stat, kw_p = stats.kruskal(gainA, gainB, gainC)
     print(f"  Kruskal-Wallis: H = {kw_stat:.4f}, p = {kw_p:.4f}")
 
-    # Dunn-style pairwise Mann-Whitney U (Bonferroni corrected)
-    pairs = [("A vs B", gainA, gainB), ("A vs C", gainA, gainC), ("B vs C", gainB, gainC)]
-    for label, g1, g2 in pairs:
+    for label, g1, g2 in [("A vs B", gainA, gainB), ("A vs C", gainA, gainC), ("B vs C", gainB, gainC)]:
         u, p_u = stats.mannwhitneyu(g1, g2, alternative="two-sided")
         p_bonf = min(p_u * 3, 1.0)
         print(f"  {label}: U = {u:.1f}, p = {p_u:.4f}, p_Bonf = {p_bonf:.4f}")
 
-    # Headline mAP comparison: C3 vs D2 vs published baseline
-    map_D1 = ft["D1"].get("map50_95", D1.mean())
     map_D2 = ft["D2"].get("map50_95", D2.mean())
     map_C3 = ft["C3"].get("map50_95", C3.mean())
-    print(f"\n  Headline mAP50:95:")
-    print(f"    D1  = {map_D1:.2f}")
-    print(f"    D2  = {map_D2:.2f}")
-    print(f"    C3  = {map_C3:.2f}")
-    print(f"    Published baseline = {BASELINE_MAP:.1f}")
+    print(f"\n  Headline mAP50:95: D2 = {map_D2:.2f}  |  C3 = {map_C3:.2f}  |  Baseline = {BASELINE_MAP:.1f}")
 
-    # Bootstrap CI: C3 − D2
     diff_C3_D2 = C3 - D2
     ci_lo, ci_hi = bootstrap_ci_mean(diff_C3_D2)
-    print(f"  C3 − D2  mean Δ = {diff_C3_D2.mean():+.4f} pp, "
-          f"95 % boot CI = [{ci_lo:.4f}, {ci_hi:.4f}]")
+    print(f"  C3 − D2 mean Δ = {diff_C3_D2.mean():+.4f} pp, 95 % boot CI = [{ci_lo:.4f}, {ci_hi:.4f}]")
 
-    # Bootstrap CI: C3 − published baseline (using per-class values directly)
-    diff_C3_base = C3 - BASELINE_MAP  # scalar baseline; distributional CI on C3
+    diff_C3_base = C3 - BASELINE_MAP
     ci_lo_b, ci_hi_b = bootstrap_ci_mean(diff_C3_base)
-    print(f"  C3 vs 37.7 pp baseline: mean Δ = {diff_C3_base.mean():+.4f} pp, "
-          f"95 % boot CI = [{ci_lo_b:.4f}, {ci_hi_b:.4f}]")
+    print(f"  C3 vs baseline mean Δ = {diff_C3_base.mean():+.4f} pp, 95 % boot CI = [{ci_lo_b:.4f}, {ci_hi_b:.4f}]")
 
     out = RESULTS_DIR / "h4c_results.json"
     with open(out, "w") as f:
@@ -142,10 +155,8 @@ def main():
             "test4_pairB": {k: v for k, v in pB.items() if k != "gain_array"},
             "test4_pairC": {k: v for k, v in pC.items() if k != "gain_array"},
             "test5_kruskal_wallis": {"H": float(kw_stat), "p": float(kw_p)},
-            "test5_C3_vs_D2": {"mean_diff": float(diff_C3_D2.mean()),
-                                "ci_lower": ci_lo, "ci_upper": ci_hi},
-            "test5_C3_vs_baseline": {"mean_diff": float(diff_C3_base.mean()),
-                                      "ci_lower": ci_lo_b, "ci_upper": ci_hi_b},
+            "test5_C3_vs_D2": {"mean_diff": float(diff_C3_D2.mean()), "ci_lower": ci_lo, "ci_upper": ci_hi},
+            "test5_C3_vs_baseline": {"mean_diff": float(diff_C3_base.mean()), "ci_lower": ci_lo_b, "ci_upper": ci_hi_b},
         }, f, indent=2, default=float)
     print(f"\nResults saved → {out}")
 

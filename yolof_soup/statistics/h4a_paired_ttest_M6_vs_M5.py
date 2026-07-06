@@ -14,6 +14,11 @@ Input file:
     Keys: condition_5 → per_class_ap, condition_6 → per_class_ap
 """
 
+"""
+RQ4 / H4a — M6 vs M5
+per_class_ap format: [[class_name, AP, AR], ...] — AP (index 1) used, AR discarded.
+"""
+
 import json
 import pathlib
 import numpy as np
@@ -26,13 +31,33 @@ RNG_SEED = 42
 ALPHA = 0.05
 
 
+def extract_ap_array(per_class_ap, expected_len=80, field_name="per_class_ap"):
+    if not isinstance(per_class_ap, list):
+        raise TypeError(f"{field_name} must be a list of [class_name, AP, AR] triples.")
+    ap_values, class_names = [], []
+    for i, entry in enumerate(per_class_ap):
+        if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+            raise ValueError(f"{field_name}[{i}] must be [class_name, AP, AR]; got {entry!r}")
+        class_name, ap = entry[0], entry[1]
+        if not isinstance(ap, (int, float)):
+            raise TypeError(f"{field_name}[{i}] AP must be numeric; got {type(ap)} -> {ap!r}")
+        class_names.append(class_name)
+        ap_values.append(float(ap))
+    arr = np.array(ap_values, dtype=float)
+    if expected_len is not None and len(arr) != expected_len:
+        raise ValueError(f"{field_name} must contain {expected_len} classes, got {len(arr)}.")
+    return arr, class_names
+
+
 def main():
     with open(SOUP_FILE) as f:
         soup = json.load(f)
 
-    m5 = np.array(soup["condition_5"]["per_class_ap"])
-    m6 = np.array(soup["condition_6"]["per_class_ap"])
-    assert len(m5) == 80 and len(m6) == 80
+    m5, names_m5 = extract_ap_array(soup["condition_5"]["per_class_ap"], field_name="condition_5.per_class_ap")
+    m6, names_m6 = extract_ap_array(soup["condition_6"]["per_class_ap"], field_name="condition_6.per_class_ap")
+
+    if names_m5 != names_m6:
+        raise ValueError("Class order mismatch between condition_5 and condition_6 per_class_ap.")
 
     diff = m6 - m5
     t_stat, p_value = stats.ttest_rel(m6, m5)
@@ -54,21 +79,15 @@ def main():
     print(f"  95 % boot CI = [{ci_lo:.4f}, {ci_hi:.4f}]")
     print(f"  Wilcoxon: W = {w_stat:.1f}, p = {w_p:.4f}")
 
-    decision = (
-        "REJECT H04a" if p_value < ALPHA and ci_lo >= 0
-        else "FAIL TO REJECT H04a"
-    )
+    decision = "REJECT H04a" if p_value < ALPHA and ci_lo >= 0 else "FAIL TO REJECT H04a"
     print(f"  Decision: {decision}")
 
     out = RESULTS_DIR / "h4a_results.json"
     with open(out, "w") as f:
-        json.dump({
-            "t": float(t_stat), "p": float(p_value),
-            "cohens_d": float(cohens_d),
-            "ci_lower": float(ci_lo), "ci_upper": float(ci_hi),
-            "wilcoxon_W": float(w_stat), "wilcoxon_p": float(w_p),
-            "decision": decision,
-        }, f, indent=2)
+        json.dump({"t": float(t_stat), "p": float(p_value), "cohens_d": float(cohens_d),
+                   "ci_lower": float(ci_lo), "ci_upper": float(ci_hi),
+                   "wilcoxon_W": float(w_stat), "wilcoxon_p": float(w_p),
+                   "decision": decision}, f, indent=2)
     print(f"  Results saved → {out}")
 
 

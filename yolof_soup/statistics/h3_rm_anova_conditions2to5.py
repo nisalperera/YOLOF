@@ -18,6 +18,11 @@ Input files:
       where each list has N=6 values (one per ingredient model).
 """
 
+"""
+RQ3 / H3 — Coefficient learning strategy comparison (Conditions 2–5)
+per_class_ap format: [[class_name, AP, AR], ...] — AP (index 1) used, AR discarded.
+"""
+
 import json
 import pathlib
 import numpy as np
@@ -27,7 +32,30 @@ RESULTS_DIR = pathlib.Path("results")
 SOUP_FILE = RESULTS_DIR / "phase3_soup_results.json"
 N_CLASSES = 80
 ALPHA = 0.05
-PRACTICAL_THRESHOLD = 0.5  # pp
+PRACTICAL_THRESHOLD = 0.5
+
+
+def extract_ap_array(per_class_ap, expected_len=80, field_name="per_class_ap"):
+    if not isinstance(per_class_ap, list):
+        raise TypeError(f"{field_name} must be a list of [class_name, AP, AR] triples.")
+    ap_values, class_names = [], []
+    for i, entry in enumerate(per_class_ap):
+        if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+            raise ValueError(f"{field_name}[{i}] must be [class_name, AP, AR]; got {entry!r}")
+        class_name, ap = entry[0], entry[1]
+        if not isinstance(ap, (int, float)):
+            raise TypeError(f"{field_name}[{i}] AP must be numeric; got {type(ap)} -> {ap!r}")
+        class_names.append(class_name)
+        ap_values.append(float(ap))
+    arr = np.array(ap_values, dtype=float)
+    if expected_len is not None and len(arr) != expected_len:
+        raise ValueError(f"{field_name} must contain {expected_len} classes, got {len(arr)}.")
+    return arr, class_names
+
+
+def check_class_order(names_a, names_b, label_a, label_b):
+    if names_a != names_b:
+        raise ValueError(f"Class order mismatch between {label_a} and {label_b}.")
 
 
 def greenhouse_geisser_epsilon(data: np.ndarray) -> float:
@@ -45,11 +73,6 @@ def greenhouse_geisser_epsilon(data: np.ndarray) -> float:
 
 
 def rm_anova(data: np.ndarray, labels: list):
-    """
-    Repeated-measures one-way ANOVA.
-    data : (n_subjects × k_conditions)
-    Returns dict of statistics.
-    """
     n, k = data.shape
     grand_mean = data.mean()
     ss_between = n * np.sum((data.mean(axis=0) - grand_mean) ** 2)
@@ -67,7 +90,6 @@ def rm_anova(data: np.ndarray, labels: list):
 
 
 def post_hoc_pairwise(data: np.ndarray, labels: list):
-    """Bonferroni-corrected pairwise paired t-tests."""
     from itertools import combinations
     pairs = list(combinations(range(len(labels)), 2))
     n_comp = len(pairs)
@@ -88,22 +110,20 @@ def main():
     with open(SOUP_FILE) as f:
         soup = json.load(f)
 
-    conditions = {
-        "Condition2": np.array(soup["condition_2"]["per_class_ap"]),
-        "Condition3": np.array(soup["condition_3"]["per_class_ap"]),
-        "Condition4": np.array(soup["condition_4"]["per_class_ap"]),
-        "M5":         np.array(soup["condition_5"]["per_class_ap"]),
-    }
-    labels = list(conditions.keys())
-    for arr in conditions.values():
-        assert len(arr) == N_CLASSES
+    raw_keys = ["condition_2", "condition_3", "condition_4", "condition_5"]
+    labels = ["Condition2", "Condition3", "Condition4", "M5"]
 
-    # (80 × 4) matrix: rows = categories (subjects), cols = conditions
-    data_matrix = np.column_stack(list(conditions.values()))
+    arrays, ref_names = {}, None
+    for k, lbl in zip(raw_keys, labels):
+        arr, names = extract_ap_array(soup[k]["per_class_ap"], field_name=f"{k}.per_class_ap")
+        if ref_names is None:
+            ref_names = names
+        else:
+            check_class_order(ref_names, names, "condition_2", k)
+        arrays[lbl] = arr
 
-    # ------------------------------------------------------------------
-    # Test 1 — RM-ANOVA
-    # ------------------------------------------------------------------
+    data_matrix = np.column_stack([arrays[l] for l in labels])
+
     print("\n" + "="*60)
     print("TEST 1 — One-way RM-ANOVA: Conditions 2, 3, 4, M5")
     print("="*60)
@@ -112,34 +132,23 @@ def main():
     print("\n--- Bonferroni-corrected pairwise post-hoc contrasts ---")
     posthoc_res = post_hoc_pairwise(data_matrix, labels)
 
-    # Practical significance: check if any pairwise diff ≥ threshold
     max_diff = max(abs(r["mean_diff"]) for r in posthoc_res)
     sig_contrast = any(r["p_bonferroni"] < ALPHA for r in posthoc_res)
-    decision_h3 = (
-        "REJECT H03" if sig_contrast and max_diff >= PRACTICAL_THRESHOLD
-        else "FAIL TO REJECT H03"
-    )
-    print(f"\n  Decision: {decision_h3}  "
-          f"(max |Δ| = {max_diff:.4f} pp, sig_contrast = {sig_contrast})")
+    decision_h3 = ("REJECT H03" if sig_contrast and max_diff >= PRACTICAL_THRESHOLD
+                   else "FAIL TO REJECT H03")
+    print(f"\n  Decision: {decision_h3}  (max |Δ| = {max_diff:.4f} pp, sig_contrast = {sig_contrast})")
 
-    # ------------------------------------------------------------------
-    # Test 2 — Paired t-test: Condition 3 (Dirichlet) vs Condition 4 (Fisher)
-    # ------------------------------------------------------------------
     print("\n" + "="*60)
     print("TEST 2 — Paired t-test: Condition 3 (Dirichlet) vs Condition 4 (Fisher)")
     print("="*60)
-    c3 = conditions["Condition3"]
-    c4 = conditions["Condition4"]
-    t2, p2 = stats.ttest_rel(c4, c3)          # Fisher − Dirichlet
+    c3, c4 = arrays["Condition3"], arrays["Condition4"]
+    t2, p2 = stats.ttest_rel(c4, c3)
     diff2 = c4 - c3
     d2 = diff2.mean() / diff2.std(ddof=1)
     print(f"  t({len(diff2)-1}) = {t2:.4f}, p = {p2:.4f}")
     print(f"  Mean Δ (Fisher − Dirichlet) = {diff2.mean():+.4f} pp")
     print(f"  Cohen's d = {d2:.4f}")
 
-    # ------------------------------------------------------------------
-    # Test 3 — Two-way RM-ANOVA: strategy × component on coefficient magnitudes
-    # ------------------------------------------------------------------
     print("\n" + "="*60)
     print("TEST 3 — 2-way RM-ANOVA: strategy × component (coefficient magnitudes)")
     print("="*60)
@@ -147,15 +156,9 @@ def main():
     coef4 = soup["condition_4"].get("coefficients", None)
     if coef3 and coef4:
         components = ["cls", "bbox", "obj"]
-        # Build (N_ingredients × 2_strategies × 3_components) array
-        # For a 2-way RM-ANOVA with strategy × component:
-        # subjects = ingredient models; within factors = strategy & component
-        coef_matrix = np.array([
-            [coef3[c] for c in components],   # shape (3, N)
-            [coef4[c] for c in components],
-        ])  # shape (2_strategies, 3_comp, N_ingredients)
-        coef_matrix = np.transpose(coef_matrix, (2, 0, 1))  # (N, 2, 3)
-
+        coef_matrix = np.array([[coef3[c] for c in components],
+                                [coef4[c] for c in components]])
+        coef_matrix = np.transpose(coef_matrix, (2, 0, 1))
         try:
             import pingouin as pg
             import pandas as pd
@@ -164,40 +167,30 @@ def main():
             for subj in range(N):
                 for s_i, strat in enumerate(["Dirichlet", "Fisher"]):
                     for c_i, comp in enumerate(components):
-                        records.append({
-                            "subject": subj, "strategy": strat,
-                            "component": comp,
-                            "coef": coef_matrix[subj, s_i, c_i],
-                        })
+                        records.append({"subject": subj, "strategy": strat,
+                                        "component": comp, "coef": coef_matrix[subj, s_i, c_i]})
             df_long = pd.DataFrame(records)
             aov2 = pg.rm_anova(dv="coef", within=["strategy", "component"],
                                subject="subject", data=df_long, detailed=True)
             print(aov2.to_string())
         except ImportError:
-            print("  pingouin not available; reporting marginal strategy and component effects.")
-            # Strategy main effect (collapse over components)
-            strat_d_mean = coef_matrix[:, 0, :].mean(axis=1)   # shape (N,)
+            print("  pingouin not available; reporting marginal effects.")
+            strat_d_mean = coef_matrix[:, 0, :].mean(axis=1)
             strat_f_mean = coef_matrix[:, 1, :].mean(axis=1)
             t_s, p_s = stats.ttest_rel(strat_f_mean, strat_d_mean)
             print(f"  Strategy main effect: t = {t_s:.4f}, p = {p_s:.4f}")
-            # Component main effect (collapse over strategy)
             for c_i, comp in enumerate(components):
-                comp_vals = coef_matrix[:, :, c_i].mean(axis=1)  # mean over strategies
+                comp_vals = coef_matrix[:, :, c_i].mean(axis=1)
                 print(f"  Component {comp}: mean coef = {comp_vals.mean():.4f} ± {comp_vals.std():.4f}")
     else:
-        print("  'coefficients' key not found in soup results; Test 3 skipped.")
-        print("  Ensure soup_construction.py saves learned coefficients per condition.")
+        print("  'coefficients' key not found; Test 3 skipped.")
 
-    # Save summary
     out = RESULTS_DIR / "h3_rq3_results.json"
-    summary = {
-        "test1_anova": anova_res,
-        "test1_posthoc": posthoc_res,
-        "decision": decision_h3,
-        "test2_paired_t": {"t": float(t2), "p": float(p2), "cohens_d": float(d2)},
-    }
     with open(out, "w") as f:
-        json.dump(summary, f, indent=2, default=float)
+        json.dump({"test1_anova": anova_res, "test1_posthoc": posthoc_res,
+                   "decision": decision_h3,
+                   "test2_paired_t": {"t": float(t2), "p": float(p2), "cohens_d": float(d2)}},
+                  f, indent=2, default=float)
     print(f"\nResults saved → {out}")
 
 

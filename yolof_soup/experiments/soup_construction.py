@@ -98,7 +98,7 @@ logger = None
 # ─────────────────────────────────────────────────────────────────────────────
 
 #: Coordinate descent λ grid for Dirichlet search (Condition 3)
-CD_LAMBDA_GRID: List[float] = [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+CD_LAMBDA_GRID: List[float] = [0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 50.0, 100.0]
 
 #: Whether to use Hessian (expensive) or L2 proxy for Fisher weights
 USE_HESSIAN_FOR_FISHER: bool = False
@@ -185,52 +185,168 @@ def build_branch_uniform(
 def build_dirichlet_cd(
     ingredient_states: List[Dict[str, torch.Tensor]],
     cfg: CfgNode,
-) -> Dict[str, torch.Tensor]:
+    max_rounds: int = 5,
+    tol: float = 1e-3,
+) -> tuple[Dict[str, torch.Tensor], Dict]:
     """
-    M3 (Condition 3): Dirichlet simplex search via coordinate descent.
+    M3 (Condition 3): Dirichlet simplex search via base-anchored coordinate descent.
 
-    Use selection split to find best λ values for cls and reg branches.
-    Then construct soup with those weights.
+    Mirrors the RQ2 base-anchoring design: the coordinate descent search over
+    (λ_cls, λ_reg, λ_shared) is run independently for each of the N ingredient
+    models acting in turn as the anchor/base checkpoint, producing N
+    base-conditioned λ estimates per branch. This makes Condition 3's
+    coefficients directly comparable — subject-for-subject — to Condition 4's
+    N per-model Fisher-weighted coefficients in the RQ3/H3 Test 3 two-way
+    RM-ANOVA (strategy × component).
+
+    Within each base-anchored run, coordinate descent alternates across all
+    three decoder branches — cls, reg, and shared (objectness) — holding the
+    other two fixed at their current best estimate on each pass, repeating
+    until the lambda triple converges or max_rounds is reached.
+
+    The final returned soup is built from the base-anchored configuration
+    that achieves the highest selection-split mAP among the N candidates,
+    since Condition 3 must still yield a single checkpoint to be evaluated
+    on val2017 and potentially carried forward as the D2 initialisation.
+
+    Returns:
+        final_soup: state dict for the best-performing base-anchored soup.
+        soup_meta: dict containing per-base λ triples (for RQ3/H3 Test 3)
+            and the index of the base model that produced the final soup.
     """
-    logger.info("Building Condition 3 (M3): Dirichlet-Sampled Branch Coefficients (CD Search)")
+    logger.info("Building Condition 3 (M3): Base-Anchored Dirichlet CD Search "
+                "(%d base-anchoring configurations)", len(ingredient_states))
 
+    N = len(ingredient_states)
     decoder_keys = get_decoder_keys(ingredient_states[0])
     cls_keys, reg_keys, shared_keys = split_decoder_subheads(decoder_keys)
     be_keys = get_backbone_encoder_keys(ingredient_states[0])
-    be_dict = extract_subdict(ingredient_states[0], be_keys)
 
-    cls_states = [extract_subdict(sd, cls_keys)    for sd in ingredient_states]
-    reg_states = [extract_subdict(sd, reg_keys)    for sd in ingredient_states]
-    shared_states = [extract_subdict(sd, shared_keys) for sd in ingredient_states]
+    cls_states_all = [extract_subdict(sd, cls_keys) for sd in ingredient_states]
+    reg_states_all = [extract_subdict(sd, reg_keys) for sd in ingredient_states]
+    shared_states_all = [extract_subdict(sd, shared_keys) for sd in ingredient_states]
 
-    anchor_cls = compute_anchor(cls_states)
-    anchor_reg = compute_anchor(reg_states)
-    anchor_shared = compute_anchor(shared_states)
+    per_base_results = []
 
-    cls_taus = compute_task_vectors(cls_states,    anchor_cls)
-    reg_taus = compute_task_vectors(reg_states,    anchor_reg)
-    shared_taus = compute_task_vectors(shared_states, anchor_shared)
+    for base_idx in range(N):
+        logger.info("=== Base-anchored CD search: base model %d/%d ===", base_idx + 1, N)
 
-    best_lam_cls = _coordinate_descent_search(
-        anchor_cls, anchor_reg, anchor_shared,
-        cls_taus, reg_taus, shared_taus,
-        be_dict, cfg, "cls"
+        be_dict = extract_subdict(ingredient_states[base_idx], be_keys)
+
+        # Anchor is the base model's own branch weights, not a global mean.
+        anchor_cls = cls_states_all[base_idx]
+        anchor_reg = reg_states_all[base_idx]
+        anchor_shared = shared_states_all[base_idx]
+
+        cls_taus = compute_task_vectors(cls_states_all, anchor_cls)
+        reg_taus = compute_task_vectors(reg_states_all, anchor_reg)
+        shared_taus = compute_task_vectors(shared_states_all, anchor_shared)
+
+        lam_cls, lam_reg, lam_shared = 0.5, 0.5, 0.5
+
+        for round_idx in range(1, max_rounds + 1):
+            prev_lams = (lam_cls, lam_reg, lam_shared)
+
+            lam_cls = _coordinate_descent_search(
+                anchor_cls, anchor_reg, anchor_shared,
+                cls_taus, reg_taus, shared_taus,
+                be_dict, cfg, "cls",
+                lam_reg=lam_reg, lam_shared=lam_shared,
+            )
+            lam_reg = _coordinate_descent_search(
+                anchor_cls, anchor_reg, anchor_shared,
+                cls_taus, reg_taus, shared_taus,
+                be_dict, cfg, "reg",
+                lam_cls=lam_cls, lam_shared=lam_shared,
+            )
+            lam_shared = _coordinate_descent_search(
+                anchor_cls, anchor_reg, anchor_shared,
+                cls_taus, reg_taus, shared_taus,
+                be_dict, cfg, "shared",
+                lam_cls=lam_cls, lam_reg=lam_reg,
+            )
+
+            logger.info(
+                "  [base=%d] CD round %d: λ_cls=%.4f, λ_reg=%.4f, λ_shared=%.4f",
+                base_idx, round_idx, lam_cls, lam_reg, lam_shared,
+            )
+
+            delta = max(
+                abs(lam_cls - prev_lams[0]),
+                abs(lam_reg - prev_lams[1]),
+                abs(lam_shared - prev_lams[2]),
+            )
+            if delta < tol:
+                logger.info(
+                    "  ✓ [base=%d] CD converged after %d round(s), max |Δλ| = %.5f",
+                    base_idx, round_idx, delta,
+                )
+                break
+        else:
+            logger.warning(
+                "  [base=%d] CD did not converge within %d rounds (final max |Δλ| = %.5f)",
+                base_idx, max_rounds, delta,
+            )
+
+        cls_merged = apply_uniform_lambdas(anchor_cls, cls_taus, lam_cls)
+        reg_merged = apply_uniform_lambdas(anchor_reg, reg_taus, lam_reg)
+        shared_merged = apply_uniform_lambdas(anchor_shared, shared_taus, lam_shared)
+        soup_base = merge_subdicts(be_dict, cls_merged, reg_merged, shared_merged)
+
+        map_val = _evaluate_soup_map(soup_base, cfg)
+
+        logger.info(
+            "  [base=%d] Final: λ_cls=%.3f, λ_reg=%.3f, λ_shared=%.3f → selection mAP=%.4f",
+            base_idx, lam_cls, lam_reg, lam_shared, map_val,
+        )
+
+        per_base_results.append({
+            "base_model_index": base_idx,
+            "lambda_cls": lam_cls,
+            "lambda_reg": lam_reg,
+            "lambda_shared": lam_shared,
+            "map50_95_selection": map_val,
+            "soup_state": soup_base,
+        })
+
+    valid_results = [r for r in per_base_results if not math.isnan(r["map50_95_selection"])]
+    if not valid_results:
+        raise RuntimeError("All 6 base-anchored Condition 3 searches failed (NaN mAP).")
+
+    best_base = max(valid_results, key=lambda r: r["map50_95_selection"])
+    final_soup = best_base["soup_state"]
+
+    logger.info(
+        "  ✓ Condition 3 final soup selected from base model %d (selection mAP=%.4f)",
+        best_base["base_model_index"], best_base["map50_95_selection"],
     )
-    best_lam_reg = _coordinate_descent_search(
-        anchor_cls, anchor_reg, anchor_shared,
-        cls_taus, reg_taus, shared_taus,
-        be_dict, cfg, "reg"
-    )
+    logger.info("  ✓ Dirichlet soup built. Size: %.2f MB", _state_dict_size_mb(final_soup))
 
-    logger.info("  → CD search found: λ_cls=%.3f, λ_reg=%.3f", best_lam_cls, best_lam_reg)
-
-    cls_merged = apply_uniform_lambdas(anchor_cls,    cls_taus,    best_lam_cls)
-    reg_merged = apply_uniform_lambdas(anchor_reg,    reg_taus,    best_lam_reg)
-    shared_merged = apply_uniform_lambdas(anchor_shared, shared_taus, 1.0)
-
-    soup = merge_subdicts(be_dict, cls_merged, reg_merged, shared_merged)
-    logger.info("  ✓ Dirichlet soup built. Size: %.2f MB", _state_dict_size_mb(soup))
-    return soup
+    soup_meta = {
+        "best_base_model_index": best_base["base_model_index"],
+        "best_base_selection_map": best_base["map50_95_selection"],
+        "per_base_lambdas": [
+            {
+                "base_model_index": r["base_model_index"],
+                "lambda_cls": r["lambda_cls"],
+                "lambda_reg": r["lambda_reg"],
+                "lambda_shared": r["lambda_shared"],
+                "map50_95_selection": r["map50_95_selection"],
+            }
+            for r in per_base_results
+        ],
+        # Flat per-branch lists across the N base-anchored runs — this is
+        # the shape h3_rm_anova_conditions2to5.py Test 3 expects under
+        # condition_3.coefficients, directly comparable to Condition 4's
+        # N per-model Fisher weights.
+        "coefficients": {
+            "cls":    [r["lambda_cls"]    for r in per_base_results],
+            "reg":    [r["lambda_reg"]    for r in per_base_results],
+            "shared": [r["lambda_shared"] for r in per_base_results],
+        },
+    }
+    logging.info(f"  → Dirichlet soup coefficients: Best cls - {soup_meta['coefficients']['cls']}, Best reg - {soup_meta['coefficients']['reg']}, Best shared - {soup_meta['coefficients']['shared']}")
+    return final_soup, soup_meta
 
 
 def _search(
@@ -243,8 +359,20 @@ def _search(
         anchor_shared: Dict[str, torch.Tensor],
         taus_shared: List[Dict[str, torch.Tensor]],
         be_dict: Dict[str, torch.Tensor],
-        cfg: CfgNode
+        cfg: CfgNode,
+        lam_cls: float,
+        lam_reg: float,
+        lam_shared: float,
     ) -> tuple[float, float]:
+    """
+    Evaluate one coordinate-descent trial soup.
+
+    The branch named `search_branch` is built using the swept value `lam`
+    (which must equal one of lam_cls/lam_reg/lam_shared, matching whichever
+    branch is under search for this trial). The other two branches are held
+    fixed at the caller-supplied lam_cls/lam_reg/lam_shared estimates from
+    the previous coordinate descent round.
+    """
 
     os.sched_setaffinity(0, CORE_GROUPS[CD_LAMBDA_GRID.index(lam) % len(CORE_GROUPS)])
     torch.set_num_threads(1)
@@ -253,17 +381,15 @@ def _search(
     model = None
 
     try:
-        logger.info("  [CD search %s] Evaluating λ=%.3f...", search_branch, lam)
-        if search_branch == "cls":
-            cls_merged = apply_uniform_lambdas(anchor_cls,    taus_cls,    lam)
-            reg_merged = apply_uniform_lambdas(anchor_reg,    taus_reg,    1.0)
-            shared_merged = apply_uniform_lambdas(anchor_shared, taus_shared, 1.0)
-        elif search_branch == "reg":
-            cls_merged = apply_uniform_lambdas(anchor_cls,    taus_cls,    1.0)
-            reg_merged = apply_uniform_lambdas(anchor_reg,    taus_reg,    lam)
-            shared_merged = apply_uniform_lambdas(anchor_shared, taus_shared, 1.0)
-        else:
+        logger.info("  [CD search %s] Evaluating λ=%.3f (cls=%.3f, reg=%.3f, shared=%.3f)...",
+                     search_branch, lam, lam_cls, lam_reg, lam_shared)
+
+        if search_branch not in {"cls", "reg", "shared"}:
             raise ValueError(f"Unknown branch: {search_branch}")
+
+        cls_merged = apply_uniform_lambdas(anchor_cls,    taus_cls,    lam_cls)
+        reg_merged = apply_uniform_lambdas(anchor_reg,    taus_reg,    lam_reg)
+        shared_merged = apply_uniform_lambdas(anchor_shared, taus_shared, lam_shared)
 
         full_state = merge_subdicts(be_dict, cls_merged, reg_merged, shared_merged)
         model = EvaluateModel(cfg, state_dict=full_state)
@@ -309,54 +435,73 @@ def _coordinate_descent_search(
     be_dict: Dict[str, torch.Tensor],
     cfg: CfgNode,
     search_branch: str,
+    lam_cls: float = 1.0,
+    lam_reg: float = 1.0,
+    lam_shared: float = 1.0,
+    max_concurrent_workers: int = 6,   # ← throttle GPU-bound concurrency
 ) -> float:
-    """Find best λ via coordinate descent over one branch while others stay at λ=1.0."""
+    if search_branch not in {"cls", "reg", "shared"}:
+        raise ValueError(f"search_branch must be one of 'cls', 'reg', 'shared'; got {search_branch!r}")
 
-    best_lam = 1.0
+    fixed_lams = {"cls": lam_cls, "reg": lam_reg, "shared": lam_shared}
+    best_lam = fixed_lams[search_branch]
     best_map = -1.0
     nan_count = 0
 
-    gpu_utils = GPUMemoryMonitor(verbose=parsed_args.verbose)
+    n_workers = min(len(CORE_GROUPS), max_concurrent_workers)
+    logger.info("  [CD search %s] Using %d concurrent workers (throttled from %d core groups) "
+                "to avoid GPU OOM in the main process.", search_branch, n_workers, len(CORE_GROUPS))
+
+    gpu_utils = GPUMemoryMonitor(verbose=logger.level == logging.DEBUG)
     gpu_utils.start()
 
     ctx = mp.get_context("spawn")
-    semaphore = ctx.Semaphore(len(CORE_GROUPS))
-    results = []
-    errors = []
-
-    def on_success(result):
-        results.append(result)
-        semaphore.release()
-
-    def error_callback(idx):
-        def on_error(exc):
-            logger.error("Job %d failed with error: %s: %s", idx, type(exc).__name__, exc, exc_info=exc)
-            errors.append((idx, exc))
-            semaphore.release()
-        return on_error
-
     pool = ctx.Pool(
-        processes=len(CORE_GROUPS),
+        processes=n_workers,
         initializer=_worker_initializer,
-        initargs=(parsed_args.verbose,)
+        initargs=(logger.level == logging.DEBUG,)
     )
+
+    async_results = []
     try:
         for lam in CD_LAMBDA_GRID:
-            semaphore.acquire()
-            pool.apply_async(
+            trial_lams = dict(fixed_lams)
+            trial_lams[search_branch] = lam
+            ar = pool.apply_async(
                 _search,
-                (search_branch, lam, anchor_cls, taus_cls, anchor_reg, taus_reg,
-                 anchor_shared, taus_shared, be_dict, cfg),
-                callback=on_success,
-                error_callback=error_callback(CD_LAMBDA_GRID.index(lam))
+                (
+                    search_branch, lam,
+                    anchor_cls, taus_cls,
+                    anchor_reg, taus_reg,
+                    anchor_shared, taus_shared,
+                    be_dict, cfg,
+                    trial_lams["cls"], trial_lams["reg"], trial_lams["shared"],
+                ),
             )
+            async_results.append((lam, ar))
+
         pool.close()
+
+        results = []
+        for lam, ar in async_results:
+            try:
+                map_val, returned_lam = ar.get(timeout=1800)  # 30-min hard timeout per trial
+                results.append((map_val, returned_lam))
+            except Exception as e:
+                logger.error("  [CD search %s] λ=%.3f raised in main process while "
+                              "collecting result: %s: %s", search_branch, lam,
+                              type(e).__name__, e, exc_info=True)
+                results.append((float("nan"), lam))
+
         pool.join()
+
     except Exception:
+        logger.error("  [CD search %s] Fatal error in dispatch/collection loop; "
+                      "terminating pool.", search_branch, exc_info=True)
         pool.terminate()
+        pool.join()
         raise
     finally:
-        pool.join()
         gpu_utils.stop()
 
     for map_val, lam in results:
@@ -367,39 +512,76 @@ def _coordinate_descent_search(
             best_lam = lam
 
     if nan_count == len(CD_LAMBDA_GRID):
-        logger.warning("  [CD search %s] All λ values returned NaN. Defaulting to λ=1.0", search_branch)
-        best_lam = 1.0
+        logger.warning("  [CD search %s] All λ values returned NaN. Defaulting to λ=%.3f",
+                        search_branch, fixed_lams[search_branch])
+        best_lam = fixed_lams[search_branch]
 
     return best_lam
 
 
+def _evaluate_soup_map(soup_state: Dict[str, torch.Tensor], cfg: CfgNode) -> float:
+    """Evaluate a fully-merged soup state dict on SELECTION_DATASET, returning mAP or NaN on failure."""
+    _register_datasets()
+    model = None
+    try:
+        model = EvaluateModel(cfg, state_dict=soup_state)
+        map_val = get_map(model, cfg, SELECTION_DATASET)
+        return map_val
+    except Exception as e:
+        logger.error("  [Condition 3 base-eval] Soup evaluation failed: %s", str(e), exc_info=True)
+        return float("nan")
+    finally:
+        if model is not None:
+            del model
+        torch.cuda.empty_cache()
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Condition 4 (M4): Fisher/Hessian-Weighted Branch Coefficients
 # ─────────────────────────────────────────────────────────────────────────────
-
 def build_fisher_weighted(
     ingredient_states: List[Dict[str, torch.Tensor]],
-) -> Dict[str, torch.Tensor]:
+    cfg: CfgNode,
+    selection_dataloader
+) -> tuple[Dict[str, torch.Tensor], Dict]:
     """
-    M4 (Condition 4): Fisher/Hessian-weighted branch coefficients.
+    M4 (Condition 4): Fisher-weighted branch coefficients.
 
-    Compute Fisher information (or L2 proxy) per ingredient per branch.
-    Weight each ingredient inversely by Fisher magnitude.
+    Estimates the true empirical Fisher information trace per branch per
+    ingredient model, using gradients computed on a 500-image unlabelled
+    calibration subset (Chapter 3, Section 3.3.3), and weights each
+    ingredient inversely by its per-branch Fisher trace magnitude.
     """
-    logger.info("Building Condition 4 (M4): Fisher/Hessian-Weighted Branch Coefficients")
+    logger.info("Building Condition 4 (M4): Fisher-Weighted Branch Coefficients "
+                "(true empirical Fisher trace, %d-image calibration subset)",
+                CALIBRATION_SUBSET_SIZE)
 
     decoder_keys = get_decoder_keys(ingredient_states[0])
     cls_keys, reg_keys, shared_keys = split_decoder_subheads(decoder_keys)
     be_keys = get_backbone_encoder_keys(ingredient_states[0])
     be_dict = extract_subdict(ingredient_states[0], be_keys)
 
-    cls_norms = [_compute_l2_norm(extract_subdict(sd, cls_keys))    for sd in ingredient_states]
-    reg_norms = [_compute_l2_norm(extract_subdict(sd, reg_keys))    for sd in ingredient_states]
-    shared_norms = [_compute_l2_norm(extract_subdict(sd, shared_keys)) for sd in ingredient_states]
+    cls_traces, reg_traces, shared_traces = [], [], []
 
-    cls_weights = _inverse_norm_weights(cls_norms)
-    reg_weights = _inverse_norm_weights(reg_norms)
-    shared_weights = _inverse_norm_weights(shared_norms)
+    for i, state_dict in enumerate(ingredient_states):
+        logger.info("  [Fisher] Estimating traces for ingredient model %d/%d...",
+                     i + 1, len(ingredient_states))
+
+        branch_traces = _compute_fisher_traces(
+            state_dict=state_dict,
+            cfg=cfg,
+            branch_key_groups={"cls": cls_keys, "reg": reg_keys, "shared": shared_keys},
+        )
+
+        cls_traces.append(branch_traces["cls"])
+        reg_traces.append(branch_traces["reg"])
+        shared_traces.append(branch_traces["shared"])
+
+        logger.debug("  [Fisher] model %d: Tr(F_cls)=%.6e, Tr(F_reg)=%.6e, Tr(F_shared)=%.6e",
+                     i, branch_traces["cls"], branch_traces["reg"], branch_traces["shared"])
+
+    cls_weights = _inverse_norm_weights(cls_traces)
+    reg_weights = _inverse_norm_weights(reg_traces)
+    shared_weights = _inverse_norm_weights(shared_traces)
 
     logger.debug("  Fisher weights: cls=%s",    [f"{w:.3f}" for w in cls_weights])
     logger.debug("  Fisher weights: reg=%s",    [f"{w:.3f}" for w in reg_weights])
@@ -411,23 +593,89 @@ def build_fisher_weighted(
 
     soup = merge_subdicts(be_dict, cls_avg, reg_avg, shared_avg)
     logger.info("  ✓ Fisher-weighted soup built. Size: %.2f MB", _state_dict_size_mb(soup))
-    return soup
+
+    soup_meta = {
+        "ingredient_fisher_traces": {
+            "cls":    cls_traces,
+            "reg":    reg_traces,
+            "shared": shared_traces,
+        },
+        # Per-model coefficients, indexed identically to ingredient_states —
+        # directly comparable to Condition 3's per-base λ lists in the
+        # RQ3/H3 Test 3 two-way RM-ANOVA.
+        "coefficients": {
+            "cls":    list(cls_weights),
+            "reg":    list(reg_weights),
+            "shared": list(shared_weights),
+        },
+    }
+    logger.info(f"  → Fisher soup coefficients: cls - {soup_meta['coefficients']['cls']}, reg - {soup_meta['coefficients']['reg']}, shared - {soup_meta['coefficients']['shared']}")
+    return soup, soup_meta
 
 
-def _compute_l2_norm(state_dict: Dict[str, torch.Tensor]) -> float:
-    """Compute L2 norm of all parameters in state_dict."""
-    norm_sq = 0.0
-    for tensor in state_dict.values():
-        if torch.is_floating_point(tensor):
-            norm_sq += (tensor.float() ** 2).sum().item()
-    return float(np.sqrt(norm_sq))
+def _compute_fisher_traces(
+    state_dict: Dict[str, torch.Tensor],
+    cfg: CfgNode,
+    branch_key_groups: Dict[str, List[str]],
+    selection_dataloader: DataLoader,
+) -> Dict[str, float]:
+    """
+    Estimate the empirical Fisher information trace for each named branch
+    group, using gradients accumulated over CALIBRATION_DATASET.
+
+    For each calibration image, a forward pass produces the model's own
+    predictions (used as pseudo-labels, since the calibration set is
+    unlabelled), the loss is backpropagated, and squared per-parameter
+    gradients are accumulated. The Fisher trace for a branch is the sum of
+    squared gradients over all parameters in that branch, averaged over
+    the calibration images.
+    """
+
+    model = EvaluateModel(cfg, state_dict=state_dict, train_mode=True)
+    model.zero_grad()
+
+    fisher_accum = {branch: 0.0 for branch in branch_key_groups}
+    n_images = 0
+
+    try:
+        for batch in selection_dataloader:
+            model.zero_grad()
+
+            loss_dict = model(batch)
+            loss = sum(loss_dict.values())
+            loss.backward()
+
+            for branch_name, key_group in branch_key_groups.items():
+                branch_sq_grad_sum = 0.0
+                for name, param in model.named_parameters():
+                    if param.grad is None:
+                        continue
+                    if _param_name_in_key_group(name, key_group):
+                        branch_sq_grad_sum += (param.grad.detach() ** 2).sum().item()
+                fisher_accum[branch_name] += branch_sq_grad_sum
+
+            n_images += 1
+
+    finally:
+        del model
+        torch.cuda.empty_cache()
+
+    if n_images == 0:
+        raise RuntimeError("Calibration loader yielded zero images; cannot estimate Fisher trace.")
+
+    return {branch: total / n_images for branch, total in fisher_accum.items()}
 
 
-def _inverse_norm_weights(norms: List[float]) -> List[float]:
-    """Convert L2 norms to inverse weights (smaller norm → larger weight)."""
-    inv_norms = [1.0 / (n + 1e-8) for n in norms]
-    total = sum(inv_norms)
-    return [w / total for w in inv_norms]
+def _param_name_in_key_group(param_name: str, key_group: List[str]) -> bool:
+    """Check whether a named parameter belongs to the given branch's key group."""
+    return any(param_name == k or param_name.startswith(k + ".") for k in key_group)
+
+
+def _inverse_norm_weights(traces: List[float]) -> List[float]:
+    """Convert Fisher traces to inverse weights (smaller trace → larger weight)."""
+    inv_traces = [1.0 / (t + 1e-8) for t in traces]
+    total = sum(inv_traces)
+    return [w / total for w in inv_traces]
 
 
 def _weighted_average(
@@ -2122,7 +2370,7 @@ MERGE_CONDITIONS = {
     "global_uniform": (build_global_uniform_souped_model, ("ingredient_states",)),
     "branch_uniform": (build_branch_uniform, ("ingredient_states",)),
     "dirichlet": (build_dirichlet_cd, ("ingredient_states", "cfg")),
-    "fisher": (build_fisher_weighted, ("ingredient_states",)),
+    "fisher": (build_fisher_weighted, ("ingredient_states", "selection_dataloader")),
     "learned": (build_learned_soup, ("ingredient_states", "cfg", "selection_dataloader")),
     "learned_tri_head": (build_tri_head_learned_soup, ("ingredient_states", "cfg", "selection_dataloader")),
 }
@@ -2457,6 +2705,6 @@ if __name__ == "__main__":
     _register_datasets()
     run(
         verbose=True,
-        cal_bn=list(MERGE_CONDITIONS.keys()),  # Calibrate BN for all conditions
-        force_construction=list(MERGE_CONDITIONS.keys()),  # Force rebuild of all conditions (ignore cached checkpoints)
+        cal_bn=parsed_args.cal_bn,  # Calibrate BN for all conditions
+        force_construction=parsed_args.force_construction,  # Force rebuild of all conditions (ignore cached checkpoints)
     )
