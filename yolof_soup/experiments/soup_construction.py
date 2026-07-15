@@ -23,16 +23,18 @@ Key outputs:
   - branch_uniform_soup.pth — Condition 2 (M2) checkpoint
   - best_learned_soup.pth — best of Conditions 3, 4, or 5 (M3, M4, or M5) checkpoint
 
-Run: python -m yolof_soup.experiments.phase3_soup_construction
+Run: python -m yolof_soup.experiments.soup_construction
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 import os
+import math
 import copy
 import json
 import time
+import random
 import logging
 import itertools
 from pathlib import Path
@@ -56,24 +58,25 @@ from yolof.utils import _format_duration
 from yolof.modeling.yolof import permute_to_N_HWA_K
 
 from yolof_soup.config.experiment_config import (
+    DEBUG,
     CHECKPOINT_DIR,
     DEVICE,
-    TRAIN_DATASET,
     RESULTS_DIR,
-    SELECTION_DATASET,
+    CALIB_DATASET,
     EVAL_DATASET,
+    CD_LAMBDA_GRID,
     PHASE2_OUTPUT_DIR,
     _register_datasets,
     build_eval_cfg,
 )
 from yolof_soup.config.experiment_registry import get_run_specs
 from yolof_soup.utils.inference import EvaluateModel
-from yolof_soup.utils.checkpoint_utils import load_states, load_state, save_checkpoint
+from yolof_soup.utils.checkpoint_utils import load_states, load_state, save_checkpoint, save_metadata
 from yolof_soup.utils.eval_utils import (
     build_eval_dataloader,
-    build_train_dataloader,
     get_map,
-    extract_per_class_ap
+    extract_per_class_ap,
+    compute_coco_map
 )
 from yolof_soup.utils.key_utils import (
     apply_uniform_lambdas,
@@ -86,25 +89,25 @@ from yolof_soup.utils.key_utils import (
     split_decoder_subheads,
     calibrate_bn
 )
-from yolof_soup.utils.state_dict_utils import assign_state_to_model
+
 from yolof_soup.utils.gpu_memory_usage import GPUMemoryMonitor
 from yolof_soup.utils.global_logger import get_logger
 
+import warnings
 
-logger = None
+# Suppress the specific torch.meshgrid warning
+warnings.filterwarnings("ignore", category=UserWarning, message=".*?torch.meshgrid.*?")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Hyperparameters (can be adjusted)
 # ─────────────────────────────────────────────────────────────────────────────
 
-#: Coordinate descent λ grid for Dirichlet search (Condition 3)
-CD_LAMBDA_GRID: List[float] = [0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 50.0, 100.0]
-
 #: Whether to use Hessian (expensive) or L2 proxy for Fisher weights
-USE_HESSIAN_FOR_FISHER: bool = False
+USE_HESSIAN_FOR_FISHER: bool = True
 
 #: Learned Soup hyperparameters (Condition 5)
-LEARNED_SOUP_LR: float = 0.01
+LEARNED_SOUP_LR: float = 0.0005
 LEARNED_SOUP_EPOCHS: int = 20
 LEARNED_SOUP_PATIENCE: int = 5
 LEARNED_SOUP_BATCH_SIZE: int = 16
@@ -126,13 +129,38 @@ CORE_GROUPS = [
 ]
 
 
+def set_seed(seed: int = 42):
+    """
+    Sets the random seed for Python, NumPy, and PyTorch for reproducible experiments.
+    """
+    # 1. Set `PYTHONHASHSEED` environment variable at a fixed value
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    
+    # 2. Set Python built-in random generator
+    random.seed(seed)
+    
+    # 3. Set NumPy random generator
+    np.random.seed(seed)
+    
+    # 4. Set PyTorch random generators
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # If using multi-GPU
+    
+    # 5. Configure CuDNN for determinism (Note: This may slightly reduce training speed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    
+    print(f"Random seed set to: {seed}")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Condition 1 (M1): Global Uniform Averaging
 # ─────────────────────────────────────────────────────────────────────────────
 
 def build_global_uniform_souped_model(
     ingredient_states: List[Dict[str, torch.Tensor]],
-) -> Dict[str, torch.Tensor]:
+    logger=logging.getLogger(__name__)
+) -> tuple[Dict[str, torch.Tensor], Any]:
     """
     M1 (Condition 1): Uniform averaging over entire model.
     θ_soup = (1/N) Σ θ_i
@@ -140,7 +168,7 @@ def build_global_uniform_souped_model(
     logger.info("Building Condition 1 (M1): Global Uniform Averaging")
     soup = compute_anchor(ingredient_states)
     logger.info("  ✓ Global uniform soup built. Size: %.2f MB", _state_dict_size_mb(soup))
-    return soup
+    return soup, None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -149,7 +177,9 @@ def build_global_uniform_souped_model(
 
 def build_branch_uniform(
     ingredient_states: List[Dict[str, torch.Tensor]],
-) -> Dict[str, torch.Tensor]:
+    cfg: CfgNode,
+    logger: logging.Logger = logging.getLogger(__name__)
+) -> tuple[Dict[str, torch.Tensor], Any]:
     """
     M2 (Condition 2): Branch-partitioned uniform averaging.
 
@@ -163,7 +193,6 @@ def build_branch_uniform(
     cls_keys, reg_keys, shared_keys = split_decoder_subheads(decoder_keys)
 
     be_keys = get_backbone_encoder_keys(ingredient_states[0])
-    be_dict = extract_subdict(ingredient_states[0], be_keys)
 
     cls_states = [extract_subdict(sd, cls_keys)    for sd in ingredient_states]
     reg_states = [extract_subdict(sd, reg_keys)    for sd in ingredient_states]
@@ -173,245 +202,57 @@ def build_branch_uniform(
     reg_avg = compute_anchor(reg_states)
     shared_avg = compute_anchor(shared_states)
 
-    soup = merge_subdicts(be_dict, cls_avg, reg_avg, shared_avg)
-    logger.info("  ✓ Branch-uniform soup built. Size: %.2f MB", _state_dict_size_mb(soup))
-    return soup
+    best_soup = None
+    best_map = 0.0
+    best_index = 0
+    soup_meta = {
+        "runs": [],
+        "best_be_index": 0,
+        "best_map50_95": 0.0
+    }
+    for i in range(len(ingredient_states)):
+        logger.info("  [Branch-Uniform] Evaluating base model %d/%d...", i + 1, len(ingredient_states))
+        be_dict = extract_subdict(ingredient_states[i], be_keys)
+        soup = merge_subdicts(be_dict, cls_avg, reg_avg, shared_avg)
+
+        model = EvaluateModel(cfg, state_dict=soup)
+        map_val = get_map(model, cfg, EVAL_DATASET)
+
+        soup_meta["runs"].append(
+            {
+                "base_model_index": i,
+                "map50_95": map_val,
+            }
+        )
+
+        if map_val > best_map:
+            best_map = map_val
+            best_soup = soup
+            best_index = i
+
+    soup_meta["best_be_index"] = best_index
+    soup_meta["best_map50_95"] = best_map
+
+    if best_soup is None:
+        be_dict = extract_subdict(ingredient_states[0], be_keys)
+        best_soup = merge_subdicts(be_dict, cls_avg, reg_avg, shared_avg)
+    
+    logger.info("  Best BE Index: %d, Best mAP50_95: %.4f, Size: %.2f MB", best_index, best_map, _state_dict_size_mb(best_soup))
+    return best_soup, soup_meta
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Condition 3 (M3): Dirichlet-Sampled Branch Coefficients (Coordinate Descent)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_dirichlet_cd(
-    ingredient_states: List[Dict[str, torch.Tensor]],
-    cfg: CfgNode,
-    max_rounds: int = 5,
-    tol: float = 1e-3,
-) -> tuple[Dict[str, torch.Tensor], Dict]:
-    """
-    M3 (Condition 3): Dirichlet simplex search via base-anchored coordinate descent.
+def _share_tensors_in_dict(d: Dict[str, torch.Tensor]):
+    """Helper to move tensors to shared memory to prevent massive IPC overhead."""
+    for v in d.values():
+        v.share_memory_()
 
-    Mirrors the RQ2 base-anchoring design: the coordinate descent search over
-    (λ_cls, λ_reg, λ_shared) is run independently for each of the N ingredient
-    models acting in turn as the anchor/base checkpoint, producing N
-    base-conditioned λ estimates per branch. This makes Condition 3's
-    coefficients directly comparable — subject-for-subject — to Condition 4's
-    N per-model Fisher-weighted coefficients in the RQ3/H3 Test 3 two-way
-    RM-ANOVA (strategy × component).
-
-    Within each base-anchored run, coordinate descent alternates across all
-    three decoder branches — cls, reg, and shared (objectness) — holding the
-    other two fixed at their current best estimate on each pass, repeating
-    until the lambda triple converges or max_rounds is reached.
-
-    The final returned soup is built from the base-anchored configuration
-    that achieves the highest selection-split mAP among the N candidates,
-    since Condition 3 must still yield a single checkpoint to be evaluated
-    on val2017 and potentially carried forward as the D2 initialisation.
-
-    Returns:
-        final_soup: state dict for the best-performing base-anchored soup.
-        soup_meta: dict containing per-base λ triples (for RQ3/H3 Test 3)
-            and the index of the base model that produced the final soup.
-    """
-    logger.info("Building Condition 3 (M3): Base-Anchored Dirichlet CD Search "
-                "(%d base-anchoring configurations)", len(ingredient_states))
-
-    N = len(ingredient_states)
-    decoder_keys = get_decoder_keys(ingredient_states[0])
-    cls_keys, reg_keys, shared_keys = split_decoder_subheads(decoder_keys)
-    be_keys = get_backbone_encoder_keys(ingredient_states[0])
-
-    cls_states_all = [extract_subdict(sd, cls_keys) for sd in ingredient_states]
-    reg_states_all = [extract_subdict(sd, reg_keys) for sd in ingredient_states]
-    shared_states_all = [extract_subdict(sd, shared_keys) for sd in ingredient_states]
-
-    per_base_results = []
-
-    for base_idx in range(N):
-        logger.info("=== Base-anchored CD search: base model %d/%d ===", base_idx + 1, N)
-
-        be_dict = extract_subdict(ingredient_states[base_idx], be_keys)
-
-        # Anchor is the base model's own branch weights, not a global mean.
-        anchor_cls = cls_states_all[base_idx]
-        anchor_reg = reg_states_all[base_idx]
-        anchor_shared = shared_states_all[base_idx]
-
-        cls_taus = compute_task_vectors(cls_states_all, anchor_cls)
-        reg_taus = compute_task_vectors(reg_states_all, anchor_reg)
-        shared_taus = compute_task_vectors(shared_states_all, anchor_shared)
-
-        lam_cls, lam_reg, lam_shared = 0.5, 0.5, 0.5
-
-        for round_idx in range(1, max_rounds + 1):
-            prev_lams = (lam_cls, lam_reg, lam_shared)
-
-            lam_cls = _coordinate_descent_search(
-                anchor_cls, anchor_reg, anchor_shared,
-                cls_taus, reg_taus, shared_taus,
-                be_dict, cfg, "cls",
-                lam_reg=lam_reg, lam_shared=lam_shared,
-            )
-            lam_reg = _coordinate_descent_search(
-                anchor_cls, anchor_reg, anchor_shared,
-                cls_taus, reg_taus, shared_taus,
-                be_dict, cfg, "reg",
-                lam_cls=lam_cls, lam_shared=lam_shared,
-            )
-            lam_shared = _coordinate_descent_search(
-                anchor_cls, anchor_reg, anchor_shared,
-                cls_taus, reg_taus, shared_taus,
-                be_dict, cfg, "shared",
-                lam_cls=lam_cls, lam_reg=lam_reg,
-            )
-
-            logger.info(
-                "  [base=%d] CD round %d: λ_cls=%.4f, λ_reg=%.4f, λ_shared=%.4f",
-                base_idx, round_idx, lam_cls, lam_reg, lam_shared,
-            )
-
-            delta = max(
-                abs(lam_cls - prev_lams[0]),
-                abs(lam_reg - prev_lams[1]),
-                abs(lam_shared - prev_lams[2]),
-            )
-            if delta < tol:
-                logger.info(
-                    "  ✓ [base=%d] CD converged after %d round(s), max |Δλ| = %.5f",
-                    base_idx, round_idx, delta,
-                )
-                break
-        else:
-            logger.warning(
-                "  [base=%d] CD did not converge within %d rounds (final max |Δλ| = %.5f)",
-                base_idx, max_rounds, delta,
-            )
-
-        cls_merged = apply_uniform_lambdas(anchor_cls, cls_taus, lam_cls)
-        reg_merged = apply_uniform_lambdas(anchor_reg, reg_taus, lam_reg)
-        shared_merged = apply_uniform_lambdas(anchor_shared, shared_taus, lam_shared)
-        soup_base = merge_subdicts(be_dict, cls_merged, reg_merged, shared_merged)
-
-        map_val = _evaluate_soup_map(soup_base, cfg)
-
-        logger.info(
-            "  [base=%d] Final: λ_cls=%.3f, λ_reg=%.3f, λ_shared=%.3f → selection mAP=%.4f",
-            base_idx, lam_cls, lam_reg, lam_shared, map_val,
-        )
-
-        per_base_results.append({
-            "base_model_index": base_idx,
-            "lambda_cls": lam_cls,
-            "lambda_reg": lam_reg,
-            "lambda_shared": lam_shared,
-            "map50_95_selection": map_val,
-            "soup_state": soup_base,
-        })
-
-    valid_results = [r for r in per_base_results if not math.isnan(r["map50_95_selection"])]
-    if not valid_results:
-        raise RuntimeError("All 6 base-anchored Condition 3 searches failed (NaN mAP).")
-
-    best_base = max(valid_results, key=lambda r: r["map50_95_selection"])
-    final_soup = best_base["soup_state"]
-
-    logger.info(
-        "  ✓ Condition 3 final soup selected from base model %d (selection mAP=%.4f)",
-        best_base["base_model_index"], best_base["map50_95_selection"],
-    )
-    logger.info("  ✓ Dirichlet soup built. Size: %.2f MB", _state_dict_size_mb(final_soup))
-
-    soup_meta = {
-        "best_base_model_index": best_base["base_model_index"],
-        "best_base_selection_map": best_base["map50_95_selection"],
-        "per_base_lambdas": [
-            {
-                "base_model_index": r["base_model_index"],
-                "lambda_cls": r["lambda_cls"],
-                "lambda_reg": r["lambda_reg"],
-                "lambda_shared": r["lambda_shared"],
-                "map50_95_selection": r["map50_95_selection"],
-            }
-            for r in per_base_results
-        ],
-        # Flat per-branch lists across the N base-anchored runs — this is
-        # the shape h3_rm_anova_conditions2to5.py Test 3 expects under
-        # condition_3.coefficients, directly comparable to Condition 4's
-        # N per-model Fisher weights.
-        "coefficients": {
-            "cls":    [r["lambda_cls"]    for r in per_base_results],
-            "reg":    [r["lambda_reg"]    for r in per_base_results],
-            "shared": [r["lambda_shared"] for r in per_base_results],
-        },
-    }
-    logging.info(f"  → Dirichlet soup coefficients: Best cls - {soup_meta['coefficients']['cls']}, Best reg - {soup_meta['coefficients']['reg']}, Best shared - {soup_meta['coefficients']['shared']}")
-    return final_soup, soup_meta
-
-
-def _search(
-        search_branch: str,
-        lam: float,
-        anchor_cls: Dict[str, torch.Tensor],
-        taus_cls: List[Dict[str, torch.Tensor]],
-        anchor_reg: Dict[str, torch.Tensor],
-        taus_reg: List[Dict[str, torch.Tensor]],
-        anchor_shared: Dict[str, torch.Tensor],
-        taus_shared: List[Dict[str, torch.Tensor]],
-        be_dict: Dict[str, torch.Tensor],
-        cfg: CfgNode,
-        lam_cls: float,
-        lam_reg: float,
-        lam_shared: float,
-    ) -> tuple[float, float]:
-    """
-    Evaluate one coordinate-descent trial soup.
-
-    The branch named `search_branch` is built using the swept value `lam`
-    (which must equal one of lam_cls/lam_reg/lam_shared, matching whichever
-    branch is under search for this trial). The other two branches are held
-    fixed at the caller-supplied lam_cls/lam_reg/lam_shared estimates from
-    the previous coordinate descent round.
-    """
-
-    os.sched_setaffinity(0, CORE_GROUPS[CD_LAMBDA_GRID.index(lam) % len(CORE_GROUPS)])
-    torch.set_num_threads(1)
-
-    _register_datasets()
-    model = None
-
-    try:
-        logger.info("  [CD search %s] Evaluating λ=%.3f (cls=%.3f, reg=%.3f, shared=%.3f)...",
-                     search_branch, lam, lam_cls, lam_reg, lam_shared)
-
-        if search_branch not in {"cls", "reg", "shared"}:
-            raise ValueError(f"Unknown branch: {search_branch}")
-
-        cls_merged = apply_uniform_lambdas(anchor_cls,    taus_cls,    lam_cls)
-        reg_merged = apply_uniform_lambdas(anchor_reg,    taus_reg,    lam_reg)
-        shared_merged = apply_uniform_lambdas(anchor_shared, taus_shared, lam_shared)
-
-        full_state = merge_subdicts(be_dict, cls_merged, reg_merged, shared_merged)
-        model = EvaluateModel(cfg, state_dict=full_state)
-        map_val = get_map(model, cfg, SELECTION_DATASET)
-        logger.info("  [CD search %s] λ=%.3f → mAP=%.4f", search_branch, lam, map_val)
-        return map_val, lam
-
-    except Exception as e:
-        logger.error("  [CD search %s] λ=%.3f failed: %s", search_branch, lam, str(e), exc_info=True)
-        return float("nan"), lam
-
-    finally:
-        if model is not None:
-            del model
-        torch.cuda.empty_cache()
-        torch.set_num_threads(torch.get_num_threads.__doc__ and 1 or 1)
-        try:
-            all_cores = set(range(os.cpu_count()))
-            os.sched_setaffinity(0, all_cores)
-        except OSError as affinity_err:
-            logger.error("  [CD search %s] Could not reset CPU affinity: %s", search_branch, affinity_err)
-
+def _share_tensors_in_list(lst: List[Dict[str, torch.Tensor]]):
+    for d in lst:
+        _share_tensors_in_dict(d)
 
 def _worker_initializer(verbose: bool):
     global logger
@@ -424,116 +265,246 @@ def _worker_initializer(verbose: bool):
     )
     logger.propagate = False
 
+def _get_task_vectors(
+        base_idx: int, 
+        ingredient_states: List[Dict[str, torch.Tensor]], 
+        cls_states_all: List[Dict[str, torch.Tensor]], 
+        reg_states_all: List[Dict[str, torch.Tensor]], 
+        shared_states_all: List[Dict[str, torch.Tensor]],
+        be_keys
+    ):
 
-def _coordinate_descent_search(
-    anchor_cls: Dict[str, torch.Tensor],
-    anchor_reg: Dict[str, torch.Tensor],
-    anchor_shared: Dict[str, torch.Tensor],
-    taus_cls: List[Dict[str, torch.Tensor]],
-    taus_reg: List[Dict[str, torch.Tensor]],
-    taus_shared: List[Dict[str, torch.Tensor]],
-    be_dict: Dict[str, torch.Tensor],
-    cfg: CfgNode,
-    search_branch: str,
-    lam_cls: float = 1.0,
-    lam_reg: float = 1.0,
-    lam_shared: float = 1.0,
-    max_concurrent_workers: int = 6,   # ← throttle GPU-bound concurrency
-) -> float:
-    if search_branch not in {"cls", "reg", "shared"}:
-        raise ValueError(f"search_branch must be one of 'cls', 'reg', 'shared'; got {search_branch!r}")
+    if base_idx == -1:
+        be_dict = [extract_subdict(sd, be_keys) for sd in ingredient_states]
+        be_dict = compute_anchor(be_dict)
 
-    fixed_lams = {"cls": lam_cls, "reg": lam_reg, "shared": lam_shared}
-    best_lam = fixed_lams[search_branch]
-    best_map = -1.0
-    nan_count = 0
+        anchor_cls = compute_anchor(cls_states_all)
+        anchor_reg = compute_anchor(reg_states_all)
+        anchor_shared = compute_anchor(shared_states_all)
+    else:
+        be_dict = extract_subdict(ingredient_states[base_idx], be_keys)
+        anchor_cls = cls_states_all[base_idx]
+        anchor_reg = reg_states_all[base_idx]
+        anchor_shared = shared_states_all[base_idx]
 
-    n_workers = min(len(CORE_GROUPS), max_concurrent_workers)
-    logger.info("  [CD search %s] Using %d concurrent workers (throttled from %d core groups) "
-                "to avoid GPU OOM in the main process.", search_branch, n_workers, len(CORE_GROUPS))
+    cls_taus = compute_task_vectors(cls_states_all, anchor_cls)
+    reg_taus = compute_task_vectors(reg_states_all, anchor_reg)
+    shared_taus = compute_task_vectors(shared_states_all, anchor_shared)
 
-    gpu_utils = GPUMemoryMonitor(verbose=logger.level == logging.DEBUG)
-    gpu_utils.start()
+    return be_dict, anchor_cls, anchor_reg, anchor_shared, cls_taus, reg_taus, shared_taus
 
-    ctx = mp.get_context("spawn")
-    pool = ctx.Pool(
-        processes=n_workers,
-        initializer=_worker_initializer,
-        initargs=(logger.level == logging.DEBUG,)
-    )
 
-    async_results = []
-    try:
-        for lam in CD_LAMBDA_GRID:
-            trial_lams = dict(fixed_lams)
-            trial_lams[search_branch] = lam
+def build_dirichlet_soup(
+    ingredient_states: List[Dict[str, torch.Tensor]],
+    cfg: 'CfgNode',
+    calib_dataset_name: str=CALIB_DATASET,
+    num_samples: int = 30,  # Number of Dirichlet samples to evaluate per base model
+    logger: logging.Logger = logging.getLogger(__name__)
+) -> tuple[Dict[str, torch.Tensor], Dict]:
+    """
+    M3 (Condition 3): True Dirichlet simplex search via base-anchoring.
+    
+    Generates `num_samples` random triplets (λ_cls, λ_reg, λ_shared) from a 
+    Dirichlet(1,1,1) distribution such that they sum to 1. Evaluates each 
+    triplet across the N base models and selects the configuration that yields 
+    the highest selection-split mAP.
+    """
+
+    logger.info("Building Condition 3 (M3): True Dirichlet Simplex Search "
+                "(%d base models, %d samples per base)", len(ingredient_states), num_samples)
+
+    N = len(ingredient_states)
+    decoder_keys = get_decoder_keys(ingredient_states[0])
+    cls_keys, reg_keys, shared_keys = split_decoder_subheads(decoder_keys)
+    be_keys = get_backbone_encoder_keys(ingredient_states[0])
+
+    cls_states_all = [extract_subdict(sd, cls_keys) for sd in ingredient_states]
+    reg_states_all = [extract_subdict(sd, reg_keys) for sd in ingredient_states]
+    shared_states_all = [extract_subdict(sd, shared_keys) for sd in ingredient_states]
+
+    per_base_results = []
+
+    # Generate the Dirichlet samples once so every base is evaluated on the same simplex points (optional, but good for fair comparison)
+    # alpha=[1, 1, 1] ensures uniform sampling across the 3D simplex.
+    dirichlet_samples = np.random.dirichlet(alpha=[1.0, 1.0, 1.0], size=num_samples)
+
+    for base_idx in [-1] + list(range(N)):
+        logger.info("=== Dirichlet search: base model %d/%d ===", base_idx + 1, N + 1)
+
+        be_dict, anchor_cls, anchor_reg, anchor_shared, cls_taus, reg_taus, shared_taus = _get_task_vectors(
+            base_idx, ingredient_states, cls_states_all, reg_states_all, shared_states_all, be_keys)
+
+        # PREVENT IPC BOTTLENECK: Move all dictionaries to shared memory before spawning workers
+        _share_tensors_in_dict(be_dict)
+        _share_tensors_in_dict(anchor_cls)
+        _share_tensors_in_dict(anchor_reg)
+        _share_tensors_in_dict(anchor_shared)
+        _share_tensors_in_list(cls_taus)
+        _share_tensors_in_list(reg_taus)
+        _share_tensors_in_list(shared_taus)
+
+        best_map = -1.0
+        best_lams = (0.0, 0.0, 0.0)
+        best_soup = None
+
+        # Determine concurrency
+        n_workers = min(len(CORE_GROUPS), 6) # Throttle to avoid GPU OOM
+        ctx = mp.get_context("spawn")
+        pool = ctx.Pool(
+            processes=n_workers,
+            initializer=_worker_initializer,
+            initargs=(logger.level == logging.DEBUG,),
+            maxtasksperchild=1  # CRITICAL FIX: Forces fresh CUDA context per task
+        )
+
+        async_results = []
+        for i, (lam_cls, lam_reg, lam_shared) in enumerate(dirichlet_samples):
             ar = pool.apply_async(
-                _search,
+                _evaluate_dirichlet_sample,
                 (
-                    search_branch, lam,
-                    anchor_cls, taus_cls,
-                    anchor_reg, taus_reg,
-                    anchor_shared, taus_shared,
-                    be_dict, cfg,
-                    trial_lams["cls"], trial_lams["reg"], trial_lams["shared"],
-                ),
+                    i, lam_cls, lam_reg, lam_shared,
+                    anchor_cls, cls_taus,
+                    anchor_reg, reg_taus,
+                    anchor_shared, shared_taus,
+                    be_dict, cfg, calib_dataset_name
+                )
             )
-            async_results.append((lam, ar))
+            async_results.append((lam_cls, lam_reg, lam_shared, ar))
 
         pool.close()
 
-        results = []
-        for lam, ar in async_results:
+        # Collect results
+        for lam_cls, lam_reg, lam_shared, ar in async_results:
             try:
-                map_val, returned_lam = ar.get(timeout=1800)  # 30-min hard timeout per trial
-                results.append((map_val, returned_lam))
+                map_val = ar.get(timeout=1800)
+                if not math.isnan(map_val) and map_val > best_map:
+                    best_map = map_val
+                    best_lams = (lam_cls, lam_reg, lam_shared)
             except Exception as e:
-                logger.error("  [CD search %s] λ=%.3f raised in main process while "
-                              "collecting result: %s: %s", search_branch, lam,
-                              type(e).__name__, e, exc_info=True)
-                results.append((float("nan"), lam))
+                logger.error("  [Base %d] Evaluation failed for sample (%.2f, %.2f, %.2f): %s", 
+                             base_idx, lam_cls, lam_reg, lam_shared, e)
 
         pool.join()
 
-    except Exception:
-        logger.error("  [CD search %s] Fatal error in dispatch/collection loop; "
-                      "terminating pool.", search_branch, exc_info=True)
-        pool.terminate()
-        pool.join()
-        raise
-    finally:
-        gpu_utils.stop()
+        # Rebuild the best soup for this base to save it
+        if best_map > 0:
+            cls_merged = apply_uniform_lambdas(anchor_cls, cls_taus, best_lams[0])
+            reg_merged = apply_uniform_lambdas(anchor_reg, reg_taus, best_lams[1])
+            shared_merged = apply_uniform_lambdas(anchor_shared, shared_taus, best_lams[2])
+            best_soup = merge_subdicts(be_dict, cls_merged, reg_merged, shared_merged)
 
-    for map_val, lam in results:
-        if np.isnan(map_val):
-            nan_count += 1
-        elif map_val > best_map:
-            best_map = map_val
-            best_lam = lam
+            logger.info("  [base=%d] Best Dirichlet Sample: λ_cls=%.3f, λ_reg=%.3f, λ_shared=%.3f → mAP=%.4f",
+                        base_idx, best_lams[0], best_lams[1], best_lams[2], best_map)
 
-    if nan_count == len(CD_LAMBDA_GRID):
-        logger.warning("  [CD search %s] All λ values returned NaN. Defaulting to λ=%.3f",
-                        search_branch, fixed_lams[search_branch])
-        best_lam = fixed_lams[search_branch]
+            per_base_results.append({
+                "base_model_index": base_idx,
+                "lambda_cls": best_lams[0],
+                "lambda_reg": best_lams[1],
+                "lambda_shared": best_lams[2],
+                "map50_95_selection": best_map,
+                "soup_state": best_soup,
+            })
+        else:
+            logger.warning("  [base=%d] All Dirichlet samples failed or returned NaN.", base_idx)
+    
 
-    return best_lam
+    valid_results = [r for r in per_base_results if not math.isnan(r["map50_95_selection"])]
+    if not valid_results:
+        raise RuntimeError("All base-anchored Condition 3 searches failed (NaN mAP).")
+
+    best_base = max(valid_results, key=lambda r: r["map50_95_selection"])
+    final_soup = best_base["soup_state"]
+
+    logger.info("  ✓ Condition 3 final soup selected from base model %d (selection mAP=%.4f)",
+                best_base["base_model_index"], best_base["map50_95_selection"])
+
+    soup_meta = {
+        "best_base_model_index": best_base["base_model_index"],
+        "best_base_selection_map": best_base["map50_95_selection"],
+        "per_base_lambdas": [
+            {
+                "base_model_index": r["base_model_index"],
+                "map50_95_selection": r["map50_95_selection"],
+            }
+            for r in valid_results
+        ],
+        "coefficients": {
+            "cls":    [r["lambda_cls"]    for r in valid_results],
+            "reg":    [r["lambda_reg"]    for r in valid_results],
+            "shared": [r["lambda_shared"] for r in valid_results],
+        },
+    }
+
+    logger.info(f"Dirichlet Coefficients: ")
+    for key, values in soup_meta["coefficients"].items():
+        logger.info("  %s: %s", key.upper(), ", ".join(f"{v:.3f}" for v in values))
+    return final_soup, soup_meta
 
 
-def _evaluate_soup_map(soup_state: Dict[str, torch.Tensor], cfg: CfgNode) -> float:
-    """Evaluate a fully-merged soup state dict on SELECTION_DATASET, returning mAP or NaN on failure."""
+def _evaluate_dirichlet_sample(
+    sample_idx: int,
+    lam_cls: float,
+    lam_reg: float,
+    lam_shared: float,
+    anchor_cls: Dict[str, torch.Tensor],
+    taus_cls: List[Dict[str, torch.Tensor]],
+    anchor_reg: Dict[str, torch.Tensor],
+    taus_reg: List[Dict[str, torch.Tensor]],
+    anchor_shared: Dict[str, torch.Tensor],
+    taus_shared: List[Dict[str, torch.Tensor]],
+    be_dict: Dict[str, torch.Tensor],
+    cfg: 'CfgNode',
+    calib_dataset_name: str
+) -> float:
+    """Evaluates a single Dirichlet (sum-to-1) coefficient triplet."""
+    
+    # CRITICAL FIX 1: Safely capture and handle CPU Affinity
+    try:
+        orig_affinity = os.sched_getaffinity(0)
+        core_group = CORE_GROUPS[sample_idx % len(CORE_GROUPS)]
+        os.sched_setaffinity(0, core_group)
+    except OSError:
+        orig_affinity = None
+
+    # CRITICAL FIX 2: Safely capture and handle PyTorch Threading
+    orig_threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+
     _register_datasets()
     model = None
+
     try:
-        model = EvaluateModel(cfg, state_dict=soup_state)
-        map_val = get_map(model, cfg, SELECTION_DATASET)
+        logger.info("  [Eval Sample %d] Testing Dirichlet triplet (cls=%.3f, reg=%.3f, shared=%.3f)...",
+                     sample_idx, lam_cls, lam_reg, lam_shared)
+
+        cls_merged = apply_uniform_lambdas(anchor_cls, taus_cls, lam_cls)
+        reg_merged = apply_uniform_lambdas(anchor_reg, taus_reg, lam_reg)
+        shared_merged = apply_uniform_lambdas(anchor_shared, taus_shared, lam_shared)
+
+        full_state = merge_subdicts(be_dict, cls_merged, reg_merged, shared_merged)
+        
+        model = EvaluateModel(cfg, state_dict=full_state)
+        map_val = get_map(model, cfg, calib_dataset_name)
         return map_val
+
     except Exception as e:
-        logger.error("  [Condition 3 base-eval] Soup evaluation failed: %s", str(e), exc_info=True)
+        logger.error("  [Eval Sample %d] Failed: %s", sample_idx, str(e), exc_info=True)
         return float("nan")
+
     finally:
         if model is not None:
             del model
         torch.cuda.empty_cache()
+        
+        # Restore original thread count
+        torch.set_num_threads(orig_threads)
+        
+        # Restore original CPU affinity
+        if orig_affinity is not None:
+            try:
+                os.sched_setaffinity(0, orig_affinity)
+            except OSError:
+                pass
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Condition 4 (M4): Fisher/Hessian-Weighted Branch Coefficients
@@ -541,24 +512,23 @@ def _evaluate_soup_map(soup_state: Dict[str, torch.Tensor], cfg: CfgNode) -> flo
 def build_fisher_weighted(
     ingredient_states: List[Dict[str, torch.Tensor]],
     cfg: CfgNode,
-    selection_dataloader
+    calib_dataset_name: str=CALIB_DATASET,
 ) -> tuple[Dict[str, torch.Tensor], Dict]:
     """
     M4 (Condition 4): Fisher-weighted branch coefficients.
 
-    Estimates the true empirical Fisher information trace per branch per
-    ingredient model, using gradients computed on a 500-image unlabelled
-    calibration subset (Chapter 3, Section 3.3.3), and weights each
-    ingredient inversely by its per-branch Fisher trace magnitude.
+    Estimate the empirical Fisher information trace for each named branch
+    group, using gradients accumulated over a LABELED CALIBRATION_DATASET.
     """
-    logger.info("Building Condition 4 (M4): Fisher-Weighted Branch Coefficients "
-                "(true empirical Fisher trace, %d-image calibration subset)",
-                CALIBRATION_SUBSET_SIZE)
 
+    dataloader = build_eval_dataloader(cfg, calib_dataset_name)
+    logger.info("Building Condition 4 (M4): Fisher-Weighted Branch Coefficients "
+                "(true empirical Fisher trace, %d-image calibration subset)", len(DatasetCatalog.get(calib_dataset_name)))
+
+    be_keys = get_backbone_encoder_keys(ingredient_states[0])
     decoder_keys = get_decoder_keys(ingredient_states[0])
     cls_keys, reg_keys, shared_keys = split_decoder_subheads(decoder_keys)
-    be_keys = get_backbone_encoder_keys(ingredient_states[0])
-    be_dict = extract_subdict(ingredient_states[0], be_keys)
+    be_dict = compute_anchor([extract_subdict(sd, be_keys) for sd in ingredient_states])
 
     cls_traces, reg_traces, shared_traces = [], [], []
 
@@ -570,6 +540,7 @@ def build_fisher_weighted(
             state_dict=state_dict,
             cfg=cfg,
             branch_key_groups={"cls": cls_keys, "reg": reg_keys, "shared": shared_keys},
+            dataloader=dataloader
         )
 
         cls_traces.append(branch_traces["cls"])
@@ -577,7 +548,9 @@ def build_fisher_weighted(
         shared_traces.append(branch_traces["shared"])
 
         logger.debug("  [Fisher] model %d: Tr(F_cls)=%.6e, Tr(F_reg)=%.6e, Tr(F_shared)=%.6e",
-                     i, branch_traces["cls"], branch_traces["reg"], branch_traces["shared"])
+                     i + 1, branch_traces["cls"], branch_traces["reg"], branch_traces["shared"])
+
+    
 
     cls_weights = _inverse_norm_weights(cls_traces)
     reg_weights = _inverse_norm_weights(reg_traces)
@@ -609,7 +582,9 @@ def build_fisher_weighted(
             "shared": list(shared_weights),
         },
     }
-    logger.info(f"  → Fisher soup coefficients: cls - {soup_meta['coefficients']['cls']}, reg - {soup_meta['coefficients']['reg']}, shared - {soup_meta['coefficients']['shared']}")
+    logger.info(f"  → Fisher soup coefficients:")
+    for key, values in soup_meta["coefficients"].items():
+        logger.info("  %s: %s", key.upper(), ", ".join(f"{v:.3f}" for v in values))
     return soup, soup_meta
 
 
@@ -617,7 +592,7 @@ def _compute_fisher_traces(
     state_dict: Dict[str, torch.Tensor],
     cfg: CfgNode,
     branch_key_groups: Dict[str, List[str]],
-    selection_dataloader: DataLoader,
+    dataloader,
 ) -> Dict[str, float]:
     """
     Estimate the empirical Fisher information trace for each named branch
@@ -631,38 +606,56 @@ def _compute_fisher_traces(
     the calibration images.
     """
 
+    # 1. Initialize model
     model = EvaluateModel(cfg, state_dict=state_dict, train_mode=True)
-    model.zero_grad()
+
+    # 2. OPTIMIZATION: Pre-map parameter objects to their respective branch names
+    # This turns an O(Branches * Params) loop into an O(1) lookup per parameter.
+    param_to_branch = {}
+    for name, param in model.named_parameters():
+        for branch_name, key_group in branch_key_groups.items():
+            if _param_name_in_key_group(name, key_group):
+                param_to_branch[param] = branch_name
+                break # Assume a parameter belongs to only one branch
 
     fisher_accum = {branch: 0.0 for branch in branch_key_groups}
     n_images = 0
 
     try:
-        for batch in selection_dataloader:
-            model.zero_grad()
+        for batch in dataloader:
+            model.zero_grad(set_to_none=True) # Slightly faster than zero_grad()
 
-            loss_dict = model(batch)
-            loss = sum(loss_dict.values())
+            # Forward pass using labeled data
+            loss_dict = model(batch, require_grad=True)[0]
+            loss = torch.sum(torch.stack(list(loss_dict.values())))
             loss.backward()
 
-            for branch_name, key_group in branch_key_groups.items():
-                branch_sq_grad_sum = 0.0
-                for name, param in model.named_parameters():
-                    if param.grad is None:
-                        continue
-                    if _param_name_in_key_group(name, key_group):
-                        branch_sq_grad_sum += (param.grad.detach() ** 2).sum().item()
-                fisher_accum[branch_name] += branch_sq_grad_sum
+            # 3. Fast accumulation loop
+            with torch.no_grad():
+                for param, branch_name in param_to_branch.items():
+                    if param.grad is not None:
+                        # Accumulate the sum of squared gradients
+                        fisher_accum[branch_name] += (param.grad ** 2).sum().item()
 
-            n_images += 1
+            # 4. FIX: Accurate image/sample counting
+            if isinstance(batch, dict) and "images" in batch:
+                batch_size = batch["images"].shape[0]
+            elif isinstance(batch, (list, tuple)):
+                batch_size = len(batch)
+            else:
+                batch_size = 1 # Fallback
+                
+            n_images += batch_size
 
     finally:
+        # Clean up GPU memory
         del model
         torch.cuda.empty_cache()
 
     if n_images == 0:
         raise RuntimeError("Calibration loader yielded zero images; cannot estimate Fisher trace.")
 
+    # Return the average Fisher trace per image
     return {branch: total / n_images for branch, total in fisher_accum.items()}
 
 
@@ -677,6 +670,10 @@ def _inverse_norm_weights(traces: List[float]) -> List[float]:
     total = sum(inv_traces)
     return [w / total for w in inv_traces]
 
+def _proportional_norm_weights(traces: List[float]) -> List[float]:
+    """Convert Fisher traces to proportional weights (larger trace → larger weight)."""
+    total = sum(traces) + 1e-12  # Add epsilon to prevent division by zero
+    return [t / total for t in traces]
 
 def _weighted_average(
     state_dicts: List[Dict[str, torch.Tensor]],
@@ -932,11 +929,62 @@ def _inference(state: Dict[str, torch.Tensor], batch: List[Dict[str, Any]], cfg:
         torch.cuda.empty_cache()
 
 
-def build_learned_soup(
+def _evaluate_condition_m5_epoch(epoch, alpha_raw, log_beta_raw, ingredient_states, cfg):
+    logger.info("  Running COCO mAP evaluation for Epoch %d...", epoch + 1)
+    
+    map_val = 0.0
+
+    # 1. Get current detached parameters
+    with torch.no_grad():
+        current_alpha = torch.softmax(alpha_raw, dim=0).detach()
+        current_beta = _get_temperature_beta(log_beta_raw).item()
+    
+    # 2. Mix a temporary state dict
+    temp_state = _mix_states_selective(ingredient_states, current_alpha)
+    temp_state = _apply_temperature_to_cls_score(temp_state, current_beta)
+    
+    # 3. Load into your evaluation model wrapper
+    eval_model = EvaluateModel(cfg, state_dict=temp_state)
+    eval_model.to(DEVICE)
+    eval_model.eval()
+    
+    # Ensure batch norm stats don't drift during eval
+    for mod in eval_model.model.modules():
+        if isinstance(mod, (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d, torch.nn.BatchNorm3d)):
+            mod.eval()
+    
+    # 4. Run standard Detectron2 evaluation
+    try:
+        metrics = compute_coco_map(eval_model, cfg, EVAL_DATASET,
+            output_dir=Path(RESULTS_DIR) / "phase3_condition_m5", tag=f"epoch_{epoch + 1}"
+        )
+        
+        # Extract standard mAP (AP at IoU=0.50:0.95)
+        map_val = float(metrics.get("AP", 0.0))
+        map50_val = float(metrics.get("AP50", 0.0))
+        ar100_val = float(metrics.get("AR-maxDets=100", 0.0))
+        
+        logger.info("  → Epoch %d COCO Evaluation: mAP = %.2f, mAP50 = %.2f, AR100 = %.2f", epoch + 1, map_val, map50_val, ar100_val)
+        logger.debug("  → Full Metrics: %s", metrics)
+    except Exception as e:
+        logger.error("  Epoch %d COCO Evaluation failed: %s", epoch + 1, str(e))
+        map_val = 0.0
+    finally:
+        # Clean up strictly to maintain memory efficiency
+        eval_model.to("cpu")
+        del eval_model
+        del temp_state
+        torch.cuda.empty_cache()
+
+    return map_val
+
+
+def build_uniform_learned_soup(
     ingredient_states: List[Dict[str, torch.Tensor]],
     cfg: CfgNode,
-    selection_dataloader,
-) -> Dict[str, torch.Tensor]:
+    calib_dataloader,
+    logger: logging.Logger=logging.getLogger(__name__),
+) -> tuple[Dict[str, torch.Tensor], Any]:
     """
     M5 (Condition 5): Learned Soup — Wortsman et al. (2022) eq. (2).
 
@@ -978,7 +1026,7 @@ def build_learned_soup(
     Args:
         ingredient_states:    List of k fine-tuned model state dicts.
         cfg:                  Detectron2 / CfgNode model configuration.
-        selection_dataloader: Held-out validation dataloader for optimisation.
+        calib_dataloader: Held-out validation dataloader for optimisation.
 
     Returns:
         Merged state dict — decoder sub-heads mixed with learned α, all other
@@ -1021,7 +1069,7 @@ def build_learned_soup(
         [alpha_raw, log_beta_raw], lr=LEARNED_SOUP_LR  # Changed: log_beta_raw instead of log_beta
     )
 
-    best_loss: float = float("inf")
+    best_map: float = 0.0
     best_alpha_normalized: Optional[torch.Tensor] = None
     best_log_beta: Optional[torch.Tensor] = None
     patience_counter: int = 0
@@ -1054,7 +1102,7 @@ def build_learned_soup(
             epoch_loss = 0.0
             epoch_batches = 0
 
-            for batch_idx, batch in enumerate(selection_dataloader):
+            for batch_idx, batch in enumerate(calib_dataloader):
 
                 # ── Step 1: collect per-model loss SCALARS (no graph retained) ─
                 # Each model loaded to GPU, run under no_grad, moved back to CPU.
@@ -1189,12 +1237,15 @@ def build_learned_soup(
                         epoch,
                     )
                     break
+            
+
+            eval_map = _evaluate_condition_m5_epoch(epoch, alpha_raw, log_beta_raw, ingredient_states, cfg)
 
             avg_loss = epoch_loss / max(epoch_batches, 1)
 
             # ── Early stopping ────────────────────────────────────────────────
-            if avg_loss < best_loss:
-                best_loss = avg_loss
+            if eval_map > best_map:
+                best_map = eval_map
                 best_alpha_normalized = torch.softmax(alpha_raw, dim=0).detach().clone()
                 best_log_beta = log_beta_raw.detach().clone()
                 patience_counter = 0
@@ -1217,7 +1268,7 @@ def build_learned_soup(
                 "  Epoch %d/%d — L_det=%.4f  best=%.4f  "
                 "α_range=[%.2f, %.2f]  β=%.4f  H(α)=%.4f  patience=%d/%d%s",
                 epoch + 1, LEARNED_SOUP_EPOCHS,
-                avg_loss, best_loss,
+                avg_loss, best_map,
                 min_alpha, max_alpha,
                 beta_epoch,
                 entropy_epoch,
@@ -1278,7 +1329,7 @@ def build_learned_soup(
         "  ✓ Learned soup built. Size: %.2f MB",
         _state_dict_size_mb(merged_state),
     )
-    return merged_state
+    return merged_state, None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1657,7 +1708,7 @@ def _decoder_forward_with_blended_params(
     encoder_features,
     blended_decoder_params: Dict[str, torch.Tensor],
     batch: List[Dict[str, Any]],
-    device: torch.device,
+    epoch: int,
 ) -> torch.Tensor:
     """
     Run the YOLOF decoder with blended parameters injected via functional_call.
@@ -1677,7 +1728,8 @@ def _decoder_forward_with_blended_params(
     Returns a scalar mean loss tensor with a live autograd graph.
     """
     m = model.model
-    gt_instances = [x["instances"].to(device) for x in batch]
+    m.to(DEVICE)
+    gt_instances = [x["instances"].to(DEVICE) for x in batch]
 
     # ── Strip module prefix from keys ─────────────────────────────────────────
     decoder_prefix = "model.decoder."
@@ -1702,7 +1754,7 @@ def _decoder_forward_with_blended_params(
     #  enforce it here defensively in case any code path re-enters train mode.)
     m.decoder.eval()
 
-    anchors_image = m.anchor_generator(encoder_features)
+    anchors_image = [anchor.to(DEVICE) for anchor in m.anchor_generator(encoder_features)]
     anchors = [copy.deepcopy(anchors_image) for _ in range(len(batch))]
 
     with torch.enable_grad():
@@ -1738,6 +1790,7 @@ def _mix_states_tri_head(
     alpha_cls: torch.Tensor,   # detached, normalised, shape (k,)
     alpha_bbox: torch.Tensor,   # detached, normalised, shape (k,)
     alpha_obj: torch.Tensor,   # detached, normalised, shape (k,)
+    logger=logging.getLogger(__name__)
 ) -> Dict[str, torch.Tensor]:
     """
     Produce the final merged state dict using four mixing strategies:
@@ -1838,6 +1891,7 @@ def _apply_temperature_tri_head(
     beta_cls: float,
     beta_bbox: float,
     beta_obj: float,
+    logger: logging.Logger = logging.getLogger(__name__)
 ) -> Dict[str, torch.Tensor]:
     """
     Bake learned temperatures into prediction-layer weights and biases.
@@ -1898,13 +1952,101 @@ def _apply_temperature_tri_head(
     return scaled
 
 
+@torch.no_grad()
+def _evaluate_condition_m6_epoch(
+    model_skeleton: Any,
+    ingredient_states: List[Dict[str, torch.Tensor]],
+    alpha_cls_raw: torch.Tensor,
+    alpha_bbox_raw: torch.Tensor,
+    alpha_obj_raw: torch.Tensor,
+    log_beta_cls: torch.Tensor,
+    log_beta_bbox: torch.Tensor,
+    log_beta_obj: torch.Tensor,
+    cfg: CfgNode,
+    epoch: int,
+    logger: logging.Logger = logging.getLogger(__name__)
+) -> float:
+    """
+    Evaluates the intermediate tri-head soup and returns the validation mAP.
+    
+    Args:
+        model_skeleton: The evaluation wrapper (e.g., EvaluateModel instance).
+        ingredient_states: List of K state dicts for the individual models.
+        alpha_cls_raw, alpha_bbox_raw, alpha_obj_raw: Unconstrained mixing logits.
+        log_beta_cls, log_beta_bbox, log_beta_obj: Unconstrained log temperatures.
+        
+    Returns:
+        float: The mean Average Precision (mAP) for the blended model.
+    """
+    # 1. Transform raw parameters into valid mixing weights and temperatures
+    alpha_cls = torch.softmax(alpha_cls_raw.detach(), dim=0)
+    alpha_bbox = torch.softmax(alpha_bbox_raw.detach(), dim=0)
+    alpha_obj = torch.softmax(alpha_obj_raw.detach(), dim=0)
+    
+    beta_cls = torch.exp(log_beta_cls.detach()).item()
+    beta_bbox = torch.exp(log_beta_bbox.detach()).item()
+    beta_obj = torch.exp(log_beta_obj.detach()).item()
+
+    # 2. Build the full mixed state dict using the current alphas
+    mixed_state = _mix_states_tri_head(
+        ingredient_states=ingredient_states,
+        alpha_cls=alpha_cls,
+        alpha_bbox=alpha_bbox,
+        alpha_obj=alpha_obj,
+    )
+
+    # 3. Apply the learned beta temperatures to the prediction layers
+    mixed_state = _apply_temperature_tri_head(
+        state_dict=mixed_state,
+        beta_cls=beta_cls,
+        beta_bbox=beta_bbox,
+        beta_obj=beta_obj,
+    )
+
+    # 4. Load the blended weights into the evaluation skeleton
+    model_skeleton.model.load_state_dict(mixed_state)
+    model_skeleton.model.eval()
+
+    # 5. Run evaluation
+    # (Assuming EvaluateModel has an .evaluate() method standard to Detectron2/wrappers)
+    
+    # Ensure batch norm stats don't drift during eval
+    for mod in model_skeleton.model.modules():
+        if isinstance(mod, (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d, torch.nn.BatchNorm3d)):
+            mod.eval()
+    map_val = 0.0
+    # 4. Run standard Detectron2 evaluation
+    try:
+        metrics = compute_coco_map(model_skeleton, cfg, EVAL_DATASET,
+            output_dir=Path(RESULTS_DIR) / "phase3_condition_m5", tag=f"epoch_{epoch}"
+        )
+        
+        # Extract standard mAP (AP at IoU=0.50:0.95)
+        map_val = float(metrics.get("AP", 0.0))
+        map50_val = float(metrics.get("AP50", 0.0))
+        ar100_val = float(metrics.get("AR-maxDets=100", 0.0))
+        
+        logger.info("  → Epoch %d COCO Evaluation: mAP = %.2f, mAP50 = %.2f, AR100 = %.2f", epoch, map_val, map50_val, ar100_val)
+        logger.debug("  → Full Metrics: %s", metrics)
+    except Exception as e:
+        logger.error("  Epoch %d COCO Evaluation failed: %s", epoch, str(e))
+    finally:
+        # Clean up strictly to maintain memory efficiency
+        model_skeleton.to("cpu")
+        del model_skeleton
+        torch.cuda.empty_cache()
+
+    return map_val
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def build_tri_head_learned_soup(
     ingredient_states: List[Dict[str, torch.Tensor]],
     cfg: CfgNode,
-    selection_dataloader,
-) -> Dict[str, torch.Tensor]:
+    calib_dataloader,
+    logger: logging.Logger = logging.getLogger(__name__)
+) -> tuple[Dict[str, torch.Tensor], Any]:
     """
     M6 (Condition 6): Tri-Head Learned Soup — Decoder-Only Activation Graph.
 
@@ -1939,7 +2081,7 @@ def build_tri_head_learned_soup(
     Args:
         ingredient_states:    List of k fine-tuned model state dicts.
         cfg:                  Detectron2 / CfgNode model configuration.
-        selection_dataloader: Held-out validation dataloader for optimisation.
+        calib_dataloader: Held-out validation dataloader for optimisation.
 
     Returns:
         Merged state dict — cls / bbox / obj heads mixed with their respective
@@ -1960,7 +2102,6 @@ def build_tri_head_learned_soup(
 
     eval_log_freq = 100
     n_ingredients = len(ingredient_states)
-    device = DEVICE
 
     # ── Partition keys once ───────────────────────────────────────────────────
     cls_keys, bbox_keys, obj_keys, other_keys = _partition_keys(ingredient_states[0])
@@ -1986,7 +2127,7 @@ def build_tri_head_learned_soup(
     # ── Load model skeleton ───────────────────────────────────────────────────
     _register_datasets()
     model_skeleton = EvaluateModel(cfg, state_dict=ingredient_states[0])
-    model_skeleton.to(device)
+    model_skeleton.to(DEVICE)
     model_skeleton.eval()
 
     for mod in model_skeleton.model.modules():
@@ -2003,10 +2144,10 @@ def build_tri_head_learned_soup(
                 module = getattr(module, part)
             param = getattr(module, parts[-1])
             if isinstance(param, torch.nn.Parameter):
-                param.data.copy_(val.to(device=device, dtype=param.dtype))
+                param.data.copy_(val.to(device=DEVICE, dtype=param.dtype))
             else:
                 setattr(module, parts[-1],
-                        val.to(device=device,
+                        val.to(device=DEVICE,
                                dtype=param.dtype if hasattr(param, "dtype")
                                else val.dtype))
 
@@ -2026,17 +2167,17 @@ def build_tri_head_learned_soup(
 
     # ── Six learnable leaf tensors ────────────────────────────────────────────
     # Initialised to zero → uniform softmax, β = exp(0) = 1.0
-    alpha_cls_raw = torch.zeros(n_ingredients, device=device,
+    alpha_cls_raw = torch.zeros(n_ingredients, device=DEVICE,
                                 dtype=torch.float32, requires_grad=True)
-    alpha_bbox_raw = torch.zeros(n_ingredients, device=device,
+    alpha_bbox_raw = torch.zeros(n_ingredients, device=DEVICE,
                                  dtype=torch.float32, requires_grad=True)
-    alpha_obj_raw = torch.zeros(n_ingredients, device=device,
+    alpha_obj_raw = torch.zeros(n_ingredients, device=DEVICE,
                                 dtype=torch.float32, requires_grad=True)
-    log_beta_cls = torch.tensor(0.0, device=device,
+    log_beta_cls = torch.tensor(0.0, device=DEVICE,
                                 dtype=torch.float32, requires_grad=True)
-    log_beta_bbox = torch.tensor(0.0, device=device,
+    log_beta_bbox = torch.tensor(0.0, device=DEVICE,
                                 dtype=torch.float32, requires_grad=True)
-    log_beta_obj = torch.tensor(0.0, device=device,
+    log_beta_obj = torch.tensor(0.0, device=DEVICE,
                                 dtype=torch.float32, requires_grad=True)
 
     optimizer = torch.optim.AdamW(
@@ -2045,7 +2186,7 @@ def build_tri_head_learned_soup(
         lr=LEARNED_SOUP_LR,
     )
 
-    best_loss: float = float("inf")
+    best_map: float = 0.0
     best_alpha_cls_normalized: Optional[torch.Tensor] = None
     best_alpha_bbox_normalized: Optional[torch.Tensor] = None
     best_alpha_obj_normalized: Optional[torch.Tensor] = None
@@ -2079,7 +2220,9 @@ def build_tri_head_learned_soup(
             epoch_loss = 0.0
             epoch_batches = 0
 
-            for batch_idx, batch in enumerate(selection_dataloader):
+            model_skeleton.to(DEVICE)
+
+            for batch_idx, batch in enumerate(calib_dataloader):
 
                 optimizer.zero_grad(set_to_none=True)
 
@@ -2108,7 +2251,7 @@ def build_tri_head_learned_soup(
                     beta_cls,
                     beta_bbox,
                     beta_obj,
-                    device,
+                    DEVICE,
                 )
 
                 # Step 3 — decoder forward + detection loss (exact graph)
@@ -2118,19 +2261,19 @@ def build_tri_head_learned_soup(
                         encoder_features,
                         blended_params,
                         batch,
-                        device,
+                        epoch=epoch + 1,
                     )
                 except Exception as e:
                     logger.error(
                         "  Decoder forward error at epoch %d batch %d: %s",
-                        epoch, batch_idx, str(e),
+                        epoch + 1, batch_idx, str(e),
                     )
                     raise
 
                 if not loss.isfinite():
                     logger.warning(
                         "  Non-finite loss at epoch %d batch %d — skipping",
-                        epoch, batch_idx,
+                        epoch + 1, batch_idx,
                     )
                     del loss, blended_params, encoder_features
                     torch.cuda.empty_cache()
@@ -2172,15 +2315,29 @@ def build_tri_head_learned_soup(
 
                 if epoch_loss / max(epoch_batches, 1) > 100.0:
                     logger.warning(
-                        "  Loss diverging at epoch %d — stopping early", epoch
+                        "  Loss diverging at epoch %d — stopping early", epoch + 1
                     )
                     break
 
             avg_loss = epoch_loss / max(epoch_batches, 1)
 
+            eval_map = _evaluate_condition_m6_epoch(
+                model_skeleton=model_skeleton,
+                ingredient_states=ingredient_states,
+                alpha_cls_raw=alpha_cls_raw,
+                alpha_bbox_raw=alpha_bbox_raw,
+                alpha_obj_raw=alpha_obj_raw,
+                log_beta_cls=log_beta_cls,
+                log_beta_bbox=log_beta_bbox,
+                log_beta_obj=log_beta_obj,
+                cfg=cfg,
+                epoch=epoch + 1,
+                logger=logger
+            )
+
             # ── Early stopping ────────────────────────────────────────────────
-            if avg_loss < best_loss:
-                best_loss = avg_loss
+            if eval_map > best_map:
+                best_map = eval_map
                 best_alpha_cls_normalized = torch.softmax(alpha_cls_raw,  dim=0).detach().clone()
                 best_alpha_bbox_normalized = torch.softmax(alpha_bbox_raw, dim=0).detach().clone()
                 best_alpha_obj_normalized = torch.softmax(alpha_obj_raw,  dim=0).detach().clone()
@@ -2198,7 +2355,7 @@ def build_tri_head_learned_soup(
                 "α_obj=%s β_obj=%.4f  |  "
                 "patience=%d/%d",
                 epoch + 1, LEARNED_SOUP_EPOCHS,
-                avg_loss, best_loss,
+                avg_loss, best_map,
                 [f"{a:.4f}" for a in
                  torch.softmax(alpha_cls_raw.detach(),  dim=0).tolist()],
                 torch.exp(log_beta_cls).item(),
@@ -2264,6 +2421,7 @@ def build_tri_head_learned_soup(
         best_alpha_cls_normalized,
         best_alpha_bbox_normalized,
         best_alpha_obj_normalized,
+        logger=logger
     )
 
     # ── Bake β values into prediction-layer weights (zero inference overhead) ─
@@ -2272,13 +2430,24 @@ def build_tri_head_learned_soup(
         best_beta_cls,
         best_beta_bbox,
         best_beta_obj,
+        logger=logger
     )
 
     logger.info(
         "  ✓ Tri-head learned soup built. Size: %.2f MB",
         _state_dict_size_mb(merged_state),
     )
-    return merged_state
+
+    metadata = {
+        "alpha_cls": best_alpha_cls_normalized.tolist(),
+        "alpha_bbox": best_alpha_bbox_normalized.tolist(),
+        "alpha_obj": best_alpha_obj_normalized.tolist(),
+        "beta_cls": best_beta_cls,
+        "beta_bbox": best_beta_bbox,
+        "beta_obj": best_beta_obj,
+    }
+
+    return merged_state, metadata
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2308,9 +2477,8 @@ def evaluate_condition(
     model.eval()
 
     try:
-        from yolof_soup.utils.eval_utils import compute_coco_map
         results_dict = compute_coco_map(
-            model, cfg, SELECTION_DATASET,
+            model, cfg, EVAL_DATASET,
             output_dir=Path(RESULTS_DIR) / "phase3_eval", tag=tag
         )
 
@@ -2320,7 +2488,7 @@ def evaluate_condition(
 
         per_class_ap = extract_per_class_ap(
             results_dict,
-            MetadataCatalog.get(SELECTION_DATASET).thing_classes
+            MetadataCatalog.get(EVAL_DATASET).thing_classes
         )
 
         logger.info(
@@ -2363,16 +2531,18 @@ def setup_logger(verbose: bool = True):
         add_file_handler=True,
     )
 
+logger = setup_logger(DEBUG)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Main entry point
 # ─────────────────────────────────────────────────────────────────────────────
 MERGE_CONDITIONS = {
     "global_uniform": (build_global_uniform_souped_model, ("ingredient_states",)),
-    "branch_uniform": (build_branch_uniform, ("ingredient_states",)),
-    "dirichlet": (build_dirichlet_cd, ("ingredient_states", "cfg")),
-    "fisher": (build_fisher_weighted, ("ingredient_states", "selection_dataloader")),
-    "learned": (build_learned_soup, ("ingredient_states", "cfg", "selection_dataloader")),
-    "learned_tri_head": (build_tri_head_learned_soup, ("ingredient_states", "cfg", "selection_dataloader")),
+    "branch_uniform": (build_branch_uniform, ("ingredient_states", "cfg")),
+    "dirichlet": (build_dirichlet_soup, ("ingredient_states", "cfg")),
+    "fisher": (build_fisher_weighted, ("ingredient_states", "cfg")),
+    "uniform_learned": (build_uniform_learned_soup, ("ingredient_states", "cfg", "calib_dataloader")),
+    "learned_tri_head": (build_tri_head_learned_soup, ("ingredient_states", "cfg", "calib_dataloader")),
 }
 
 def run(verbose: bool = True, cal_bn: list = [], force_construction: list = []) -> Dict[str, Any]:
@@ -2433,27 +2603,27 @@ def run(verbose: bool = True, cal_bn: list = [], force_construction: list = []) 
 
         # ── Build dataloaders ─────────────────────────────────────────────────
         logger.info("\n[3/7] Building dataloaders...")
-        # NEW: Use EVAL_DATASET for learned soup optimization (validation-based learning)
-        # This provides better generalization than training on SELECTION_DATASET
-        selection_dataloader = build_eval_dataloader(
-            cfg, EVAL_DATASET, batch_size=LEARNED_SOUP_BATCH_SIZE
+        # NEW: Use CALIB_DATASET for learned soup optimization (validation-based learning)
+        # This provides better generalization than training on CALIB_DATASET
+        calib_dataloader = build_eval_dataloader(
+            cfg, CALIB_DATASET, batch_size=LEARNED_SOUP_BATCH_SIZE
         )
-        train_dataloader = build_train_dataloader(cal_cfg, TRAIN_DATASET)
+        # train_dataloader = build_train_dataloader(cal_cfg, TRAIN_DATASET)
 
-        if hasattr(selection_dataloader.dataset, "sampler"):
-            selection_dataset_size = selection_dataloader.dataset.sampler._size
+        if hasattr(calib_dataloader.dataset, "sampler"):
+            calib_dataset_size = calib_dataloader.dataset.sampler._size
         else:
-            selection_dataset_size = len(selection_dataloader.dataset._dataset)
+            calib_dataset_size = len(calib_dataloader.dataset._dataset)
 
-        if hasattr(train_dataloader.dataset.dataset, "sampler"):
-            train_dataset_size = train_dataloader.dataset.dataset.sampler._size
-        else:
-            train_dataset_size = len(train_dataloader.dataset._dataset)
+        # if hasattr(train_dataloader.dataset.dataset, "sampler"):
+        #     train_dataset_size = train_dataloader.dataset.dataset.sampler._size
+        # else:
+        #     train_dataset_size = len(train_dataloader.dataset._dataset)
 
         logger.info(
-            "  ✓ Dataloaders ready — train: %d batches, selection: %d batches",
-            int(train_dataset_size / train_dataloader.batch_size),
-            int(selection_dataset_size / selection_dataloader.batch_size),
+            "  ✓ Dataloaders ready — Calibration: %d batches",
+            # int(train_dataset_size / train_dataloader.batch_size),
+            int(calib_dataset_size / calib_dataloader.batch_size),
         )
 
         logger.debug("  → force_construction list: %s", force_construction)
@@ -2483,12 +2653,15 @@ def run(verbose: bool = True, cal_bn: list = [], force_construction: list = []) 
                         )
                     args[k] = locals()[k]
                 checkpoint_name = f"condition_{list(MERGE_CONDITIONS.keys()).index(method) + 1}_state"
-                checkpoints[checkpoint_name] = build_fn(**args)
-                # ── Save checkpoints ──────────────────────────────────────────────────
+                merged_checkpoints, metadata = build_fn(**args)
+                checkpoints[checkpoint_name] = merged_checkpoints
+                # ── Save checkpoints and metadata ──────────────────────────────────────────────────
                 logger.info("\nSaving checkpoints...")
                 save_checkpoint(checkpoint_dir / f"{method}_soup.pth", checkpoints[checkpoint_name])
-            logger.info("  ✓ Conditions 1-5 built")
-            logger.info("  ✓ All 5 conditions built")
+                if metadata is not None:
+                    save_metadata(results_dir / f"{method}_soup_metadata.json", metadata)
+            logger.info("  ✓ Conditions 1-6 built")
+            logger.info("  ✓ All 6 conditions built")
 
         else:
             logger.info("\n[4/7] Loading cached soup condition checkpoints...")
@@ -2502,7 +2675,8 @@ def run(verbose: bool = True, cal_bn: list = [], force_construction: list = []) 
 
         # ── BN calibration ────────────────────────────────────────────────────
         if cal_bn:
-            n_cal = int(train_dataset_size / train_dataloader.batch_size)
+            # n_cal = int(train_dataset_size / train_dataloader.batch_size)
+            n_cal = int(calib_dataset_size / calib_dataloader.batch_size)
             for label, method, state in [
                 ("Global Uniform", "global_uniform", "condition_1_state"),
                 ("Branch Uniform", "branch_uniform", "condition_2_state"),
@@ -2515,7 +2689,7 @@ def run(verbose: bool = True, cal_bn: list = [], force_construction: list = []) 
                     continue
                 logger.info("  Calibrating BN: %s...", label)
                 checkpoints[state] = calibrate_bn(
-                    cal_cfg, checkpoints[state], train_dataloader,
+                    cal_cfg, checkpoints[state], calib_dataloader,
                     n_batches=n_cal, device=DEVICE
                 )
             logger.info("  ✓ BN calibration complete for all conditions")
@@ -2554,15 +2728,15 @@ def run(verbose: bool = True, cal_bn: list = [], force_construction: list = []) 
             if map in map_results:
                 map_results["best_map"] = max(map_results.get("best_map", 0.0), map_results[map]["map50_95"])
 
-        if map_results["best_map"] == map_results.get("results_cond6")["map50_95"]:
+        if map_results["best_map"] == map_results.get("results_cond6", {}).get("map50_95"):
             map_results["best_learned_cond"] = 6
             map_results["best_learned_state"] = "condition_6_state"
             map_results["best_learned_label"] = "Learned Soup (M6)"
-        elif map_results["best_map"] == map_results.get("results_cond5")["map50_95"]:
+        elif map_results["best_map"] == map_results.get("results_cond5", {}).get("map50_95"):
             map_results["best_learned_cond"] = 5
             map_results["best_learned_state"] = "condition_5_state"
             map_results["best_learned_label"] = "Learned Soup (M5)"
-        elif map_results["best_map"] == map_results.get("results_cond4")["map50_95"]:
+        elif map_results["best_map"] == map_results.get("results_cond4", {}).get("map50_95"):
             map_results["best_learned_cond"] = 4
             map_results["best_learned_state"] = "condition_4_state"
             map_results["best_learned_label"] = "Fisher-weighted (M4)"
@@ -2695,16 +2869,26 @@ if __name__ == "__main__":
                         help="Perform BN calibration for specified methods")
     parser.add_argument("--force-construction", nargs='+', choices=list(MERGE_CONDITIONS.keys()), default=None,
                         help="Force rebuild of all conditions (ignore cached checkpoints)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parsed_args = parser.parse_args()
 
+    _register_datasets()
+    gpu_monitor = GPUMemoryMonitor(interval=30, verbose=parsed_args.verbose)
+    set_seed(parsed_args.seed)
+    DEBUG = parsed_args.verbose
+    logger = setup_logger(verbose=parsed_args.verbose)
+    
     # run(
     #     verbose=parsed_args.verbose,
     #     cal_bn=parsed_args.cal_bn,
     #     force_construction=parsed_args.force_construction,
     # )
-    _register_datasets()
+    # run(
+        # verbose=True,
+        # cal_bn=["fisher"],
+        # force_construction=["fisher"],
+    # )
     run(
-        verbose=True,
-        cal_bn=parsed_args.cal_bn,  # Calibrate BN for all conditions
-        force_construction=parsed_args.force_construction,  # Force rebuild of all conditions (ignore cached checkpoints)
+        cal_bn=list(MERGE_CONDITIONS.keys()),  # Calibrate BN for all conditions
+        force_construction=list(MERGE_CONDITIONS.keys()),  # Force rebuild of all conditions (ignore cached checkpoints)
     )

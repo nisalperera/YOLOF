@@ -62,7 +62,6 @@ from yolof.utils.events import WandBWriter
 from yolof.hooks import GradCAMHook, BestCheckpointerAPARF1, EarlyStoppingHook
 from yolof.evaluation.coco_ar_ap import COCOEvaluatorWithAPandAR
 from yolof.data.samplers import EvenlyDistributedInferenceSampler
-from yolof_soup.config.experiment_config import COCO_OI_VAL_IMG_DIR
 
 
 class Trainer(DefaultTrainer):
@@ -271,37 +270,37 @@ def setup(args):
     cfg.merge_from_list(args.opts)
 
     try:
-        if "coco2017" in cfg.DATASETS.TRAIN[0] and "coco2017" in cfg.DATASETS.TEST[0]:
-            COCO_TRAIN_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_train2017.json'
-            COCO_TRAIN_IMG_DIR = f'{root_dir}/datasets/coco/images/train2017'
-            COCO_VAL_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_val2017.json'
-            COCO_VAL_IMG_DIR = f'{root_dir}/datasets/coco/images/val2017'
+        # if "coco2017" in cfg.DATASETS.TRAIN[0] and "coco2017" in cfg.DATASETS.TEST[0]:
+        COCO_TRAIN_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_train2017.json'
+        COCO_TRAIN_IMG_DIR = f'{root_dir}/datasets/coco/images/train2017'
+        COCO_VAL_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_val2017_without_heldout.json'
+        COCO_VAL_IMG_DIR = f'{root_dir}/datasets/coco/images/val2017'
 
-            with open(COCO_TRAIN_ANN_FILE, "r") as r:
-                coco_thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
+        with open(COCO_TRAIN_ANN_FILE, "r") as r:
+            coco_thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
 
-            register_coco_instances("coco2017_train", {}, COCO_TRAIN_ANN_FILE, COCO_TRAIN_IMG_DIR)
-            register_coco_instances("coco2017_val", {}, COCO_VAL_ANN_FILE, COCO_VAL_IMG_DIR)
+        register_coco_instances("coco2017_train", {}, COCO_TRAIN_ANN_FILE, COCO_TRAIN_IMG_DIR)
+        register_coco_instances("coco2017_val", {}, COCO_VAL_ANN_FILE, COCO_VAL_IMG_DIR)
 
-            MetadataCatalog.get("coco2017_train").set(thing_classes=coco_thing_classes)
-            MetadataCatalog.get("coco2017_val").set(thing_classes=coco_thing_classes)
+        MetadataCatalog.get("coco2017_train").set(thing_classes=coco_thing_classes)
+        MetadataCatalog.get("coco2017_val").set(thing_classes=coco_thing_classes)
 
-        elif "coco_oi" in cfg.DATASETS.TRAIN[0] and "coco_oi" in cfg.DATASETS.TEST[0]:
-            COCO_OI_TRAIN_1_ANN_FILE = f'{root_dir}/datasets/coco_oi/annotations/coco_oi_instances_validation.json'
-            COCO_OI_TRAIN_2_ANN_FILE = f'{root_dir}/datasets/coco_oi/annotations/coco_oi_instances_eval.json'
-            COCO_OI_IMG_DIR = f'{root_dir}/datasets/coco_oi/images'
-            COCO_OI_VAL_ANN_FILE = f'{root_dir}/datasets/coco_oi/annotations/coco_oi_instances_test.json'
+        # elif "coco_oi" in cfg.DATASETS.TRAIN[0] and "coco_oi" in cfg.DATASETS.TEST[0]:
+        #     COCO_OI_TRAIN_1_ANN_FILE = f'{root_dir}/datasets/coco_oi/annotations/coco_oi_instances_validation.json'
+        #     COCO_OI_TRAIN_2_ANN_FILE = f'{root_dir}/datasets/coco_oi/annotations/coco_oi_instances_eval.json'
+        #     COCO_OI_IMG_DIR = f'{root_dir}/datasets/coco_oi/images'
+        #     COCO_OI_VAL_ANN_FILE = f'{root_dir}/datasets/coco_oi/annotations/coco_oi_instances_test.json'
 
-            with open(COCO_OI_TRAIN_1_ANN_FILE, "r") as r:
-                coco_oi_thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
+        #     with open(COCO_OI_TRAIN_1_ANN_FILE, "r") as r:
+        #         coco_oi_thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
 
-            register_coco_instances("coco_oi_train_1", {}, COCO_OI_TRAIN_1_ANN_FILE, COCO_OI_IMG_DIR)
-            register_coco_instances("coco_oi_train_2", {}, COCO_OI_TRAIN_2_ANN_FILE, COCO_OI_IMG_DIR)
-            register_coco_instances("coco_oi_val", {}, COCO_OI_VAL_ANN_FILE, COCO_OI_VAL_IMG_DIR)
+        #     register_coco_instances("coco_oi_train_1", {}, COCO_OI_TRAIN_1_ANN_FILE, COCO_OI_IMG_DIR)
+        #     register_coco_instances("coco_oi_train_2", {}, COCO_OI_TRAIN_2_ANN_FILE, COCO_OI_IMG_DIR)
+        #     register_coco_instances("coco_oi_val", {}, COCO_OI_VAL_ANN_FILE, COCO_OI_VAL_IMG_DIR)
 
-            MetadataCatalog.get("coco_oi_train_1").set(thing_classes=coco_oi_thing_classes)
-            MetadataCatalog.get("coco_oi_train_2").set(thing_classes=coco_oi_thing_classes)
-            MetadataCatalog.get("coco_oi_val").set(thing_classes=coco_oi_thing_classes)
+        #     MetadataCatalog.get("coco_oi_train_1").set(thing_classes=coco_oi_thing_classes)
+        #     MetadataCatalog.get("coco_oi_train_2").set(thing_classes=coco_oi_thing_classes)
+        #     MetadataCatalog.get("coco_oi_val").set(thing_classes=coco_oi_thing_classes)
 
         logger.info("Datasets registered successfully!")
         logger.info("Available datasets: {}".format(DatasetCatalog.list()))
