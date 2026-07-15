@@ -276,6 +276,10 @@ if __name__ == "__main__":
 
     _register_datasets()
     gpu_monitor = GPUMemoryMonitor(interval=30, verbose=parsed_args.verbose)
-    gpu_monitor.start()
+    try:
+        gpu_monitor.start()
 
-    run(verbose=True, seed=parsed_args.seed)
+        run(verbose=True, seed=parsed_args.seed)
+    except KeyboardInterrupt:
+        gpu_monitor.stop()
+        exit()
