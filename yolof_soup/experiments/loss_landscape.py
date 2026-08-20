@@ -18,18 +18,19 @@ This module:
    - Test 3: RM-ANOVA on Hessian traces with directional contrasts
 
 Outputs:
-  - phase4_lmc_barriers.json — barrier measurements for all pairs/components
-  - phase4_hessian_traces.json — Hessian traces for all ingredients/components
-  - phase4_statistical_tests.json — test results with p-values and effect sizes
+  - phase4_lmc_barriers_{timestamp}.json — barrier measurements for all pairs/components
+  - phase4_hessian_traces_{timestamp}.json — Hessian traces for all ingredients/components
+  - phase4_statistical_tests_{timestamp}.json — test results with p-values and effect sizes
 
 Run: python -m yolof_soup.experiments.phase4_loss_landscape
 """
 
 from __future__ import annotations
 
+import os
 import json
 import logging
-import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -46,13 +47,13 @@ from detectron2.config import CfgNode
 from yolof_soup.config.experiment_config import (
     PHASE2_OUTPUT_DIR,
     DEVICE,
-    EVAL_DATASET,
+    CALIB_DATASET,
     RESULTS_DIR,
     build_eval_cfg,
     _register_datasets,
 )
 from yolof_soup.config.experiment_registry import get_run_specs
-from yolof_soup.utils.checkpoint_utils import load_states
+from yolof_soup.utils.checkpoint_utils import load_state, load_states
 from yolof_soup.utils.eval_utils import get_map, build_eval_dataloader
 from yolof_soup.utils.key_utils import (
     extract_subdict,
@@ -71,7 +72,7 @@ logger = None
 # ─────────────────────────────────────────────────────────────────────────────
 
 #: Number of interpolation points for LMC barriers
-LMC_ALPHA_STEPS: int = 11
+LMC_ALPHA_STEPS: int = 10
 
 #: Number of Rademacher vectors for Hessian trace estimation
 HESSIAN_SAMPLES: int = 50
@@ -84,6 +85,9 @@ CORE_GROUPS = [
     list(range(16, 20)),  # Model 4 → cores 16–19
     list(range(20, 24)),  # Model 5 → cores 20–23
 ]
+
+# Fixed anchor environment for pairwise LMC evaluation.
+ANCHOR_SOUP_CKPT = Path("/home/nisalperera/YOLOF/output/branch_uniform_soup.pth")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -99,6 +103,16 @@ def compute_model_loss(
     """Compute mean loss on dataloader subset."""
     from yolof_soup.utils.eval_utils import quick_loss
     return quick_loss(model, dataloader, device, max_samples=max_samples)
+
+
+def compute_model_map(
+    model: Union[torch.nn.Module, 'EvaluateModel'],
+    cfg,
+    dataset_name: str,
+    tag: str,
+) -> float:
+    """Compute scalar mAP50:95 for a model on the requested dataset."""
+    return float(get_map(model, cfg, dataset_name, output_dir=Path(RESULTS_DIR) / "phase4_lmc_eval", tag=tag))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -124,21 +138,32 @@ def compute_lmc_barrier(
     state_a: Dict[str, torch.Tensor],
     state_b: Dict[str, torch.Tensor],
     cfg,
-    dataloader,
-    common_states: List[Dict[str, torch.Tensor]] = [],
-    n_steps: int = 11,
+    common_states: Optional[List[Dict[str, torch.Tensor]]] = None,
+    n_steps: int = LMC_ALPHA_STEPS,
+    dataset_name: Optional[str] = CALIB_DATASET,
+    eval_tag_prefix: str = "phase4_lmc",
 ) -> Tuple[float, List[float]]:
     """
-    Compute LMC barrier between two state-dicts.
+    Compute an mAP-based LMC barrier between two state-dicts.
     
     Returns:
         (barrier_magnitude, loss_trajectory)
-        where barrier = max(loss) - min(loss) along interpolation path
+        where barrier = ((mAP(W_i) + mAP(W_j)) / 2) - mAP(W_0.5)
+        and positive values indicate a midpoint performance drop.
     """
-    losses = []
-    alphas = np.linspace(0, 1, n_steps)
+    if common_states is None:
+        common_states = []
+
+    map_scores = []
+    alphas = np.round(np.linspace(0, 1, n_steps + 1)[1:], 1)
+    midpoint_score = None
+    endpoint_a_score = None
+    endpoint_b_score = None
     
+    logger.info(f"Alpha values: {alphas.tolist()}")
+
     for alpha in alphas:
+        logger.info("Interpolating state_dicts using α=%.2f", alpha)
         # Interpolate state
         state_interp = interpolate_state(state_a, state_b, float(alpha))
         _state_interp = {k: v.clone() for k, v in state_interp.items()}  # Clone to avoid in-place issues
@@ -150,31 +175,42 @@ def compute_lmc_barrier(
             if not torch.equal(state_interp[k], _state_interp[k]):
                 logger.warning("  [LMC] α=%.2f: State interpolation mismatch on key '%s'", alpha, k)
 
-        # Build model and compute loss
+        if not (np.isclose(alpha, 0.1) or np.isclose(alpha, 0.5) or np.isclose(alpha, 1.0)):
+            map_scores.append(float("nan"))
+            continue
+
+        # Build model and compute mAP at the anchor, midpoint, and endpoint
         model = EvaluateModel(cfg, state_dict=state_interp)  # Load interpolated state directly into model
         # assign_state_to_model(model, state_interp)
         model = model.to(DEVICE)
         model.eval()
         
         try:
-            loss_val = compute_model_loss(model, dataloader, DEVICE, max_samples=None)
-            losses.append(loss_val)
-            logger.debug("  [LMC] α=%.2f → loss=%.5f", alpha, loss_val)
+            tag = f"{eval_tag_prefix}_alpha{alpha:.1f}_{os.getpid()}"
+            map_val = compute_model_map(model, cfg, dataset_name, tag=tag)
+            map_scores.append(map_val)
+            logger.debug("  [LMC] α=%.2f → mAP=%.5f", alpha, map_val)
+
+            if np.isclose(alpha, 0.1):
+                endpoint_a_score = map_val
+            elif np.isclose(alpha, 0.5):
+                midpoint_score = map_val
+            elif np.isclose(alpha, 1.0):
+                endpoint_b_score = map_val
         except Exception as e:
-            logger.warning("  [LMC] α=%.2f → loss computation failed: %s", alpha, str(e), exc_info=True)
-            losses.append(float("nan"))
+            logger.warning("  [LMC] α=%.2f → mAP computation failed: %s", alpha, str(e), exc_info=True)
+            map_scores.append(float("nan"))
         
         del model
         torch.cuda.empty_cache()
     
-    # Compute barrier (robust to NaN by ignoring them)
-    valid_losses = [l for l in losses if not np.isnan(l)]
-    if len(valid_losses) < 2:
+    # Compute barrier from the midpoint mAP drop.
+    if endpoint_a_score is None or endpoint_b_score is None or midpoint_score is None:
         barrier = 0.0
     else:
-        barrier = float(np.max(valid_losses) - np.min(valid_losses))
+        barrier = float(((endpoint_a_score + endpoint_b_score) / 2.0) - midpoint_score)
     
-    return barrier, losses
+    return barrier, map_scores
 
 def _worker_initializer(verbose: bool):
     global logger
@@ -186,101 +222,116 @@ def _worker_initializer(verbose: bool):
         )
     logger.propagate = False
     
-def _compute_pairwise_lmc_barriers(
-    ingredient_states, 
-    cfg, 
-    dataloader, 
-    base_idx,
+def _compute_pairwise_lmc_barrier_worker(
+    pair_index: int,
+    i: int,
+    j: int,
+    ingredient_states,
+    cfg,
+    anchor_state,
     be_keys,
     cls_keys,
     reg_keys,
-    shared_keys
+    shared_keys,
 ):
-    
-    logger.debug("Process %d: Starting LMC barrier computation for base model %d", os.getpid(), base_idx)
-    logger.debug("Running on CPU cores: %s", CORE_GROUPS[base_idx % len(CORE_GROUPS)])
-    os.sched_setaffinity(0, CORE_GROUPS[base_idx % len(CORE_GROUPS)])
+    logger.debug("Process %d: Starting pair %d (%d vs %d)", os.getpid(), pair_index + 1, i, j)
     torch.set_num_threads(1)
 
-    pair_idx = 0
-    results = {
-        base_idx: {}
+    _register_datasets()
+
+    pair_name = f"pair_{i:02d}{j:02d}"
+    filepath = Path(RESULTS_DIR) / "lmc_barriers" / f"{pair_name}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.json"
+
+    if os.path.exists(filepath):
+        logger.info("  [SKIP] Pair [%d/15] %s already exists", pair_index + 1, pair_name)
+        with open(filepath, "r") as f:
+            return pair_name, json.load(f)
+
+    anchor_be = extract_subdict(anchor_state, be_keys)
+    anchor_cls = extract_subdict(anchor_state, cls_keys)
+    anchor_reg = extract_subdict(anchor_state, reg_keys)
+    anchor_shared = extract_subdict(anchor_state, shared_keys)
+
+    state_i = ingredient_states[i]
+    state_j = ingredient_states[j]
+
+    logger.info("  Pair [%d/15] %s (ingredients %d vs %d)", pair_index + 1, pair_name, i, j)
+
+    logger.info("    Computing backbone_encoder barrier...")
+    be_i = extract_subdict(state_i, be_keys)
+    be_j = extract_subdict(state_j, be_keys)
+    barrier_be, _ = compute_lmc_barrier(
+        be_i,
+        be_j,
+        cfg,
+        [anchor_cls, anchor_reg, anchor_shared],
+        dataset_name=CALIB_DATASET,
+        eval_tag_prefix=f"{pair_name}_backbone",
+    )
+
+    logger.info("    Computing cls_head barrier...")
+    cls_i = extract_subdict(state_i, cls_keys)
+    cls_j = extract_subdict(state_j, cls_keys)
+    barrier_cls, _ = compute_lmc_barrier(
+        cls_i,
+        cls_j,
+        cfg,
+        [anchor_be, anchor_reg, anchor_shared],
+        dataset_name=CALIB_DATASET,
+        eval_tag_prefix=f"{pair_name}_cls",
+    )
+
+    logger.info("    Computing reg_head barrier...")
+    reg_i = extract_subdict(state_i, reg_keys)
+    reg_j = extract_subdict(state_j, reg_keys)
+    barrier_reg, _ = compute_lmc_barrier(
+        reg_i,
+        reg_j,
+        cfg,
+        [anchor_be, anchor_cls, anchor_shared],
+        dataset_name=CALIB_DATASET,
+        eval_tag_prefix=f"{pair_name}_reg",
+    )
+
+    logger.info("    Computing objectness_head barrier...")
+    shared_i = extract_subdict(state_i, shared_keys)
+    shared_j = extract_subdict(state_j, shared_keys)
+    barrier_shared, _ = compute_lmc_barrier(
+        shared_i,
+        shared_j,
+        cfg,
+        [anchor_be, anchor_cls, anchor_reg],
+        dataset_name=CALIB_DATASET,
+        eval_tag_prefix=f"{pair_name}_shared",
+    )
+
+    logger.info("    Computing full model barrier...")
+    barrier_full, _ = compute_lmc_barrier(
+        state_i,
+        state_j,
+        cfg,
+        dataset_name=CALIB_DATASET,
+        eval_tag_prefix=f"{pair_name}_full",
+    )
+
+    pair = {
+        "backbone_encoder": float(barrier_be),
+        "cls_head": float(barrier_cls),
+        "reg_head": float(barrier_reg),
+        "shared": float(barrier_shared),
+        "full_model": float(barrier_full),
     }
-    base = ingredient_states[base_idx]
-    base_be = extract_subdict(base, be_keys)
-    base_cls = extract_subdict(base, cls_keys)
-    base_reg = extract_subdict(base, reg_keys)
-    base_shared = extract_subdict(base, shared_keys)
-    for i in range(len(ingredient_states)):
-        for j in range(i + 1, len(ingredient_states)):
-            pair_name = f"pair_{i:02d}{j:02d}"
-            filepath = f"{RESULTS_DIR}/lmc_barriers/base{base_idx}_pair{pair_name}.json"
-            if os.path.exists(filepath):
-                logger.info("  [SKIP] Base [%d], Pair [%d/15] %s already exists", base_idx + 1, pair_idx + 1, pair_name)
-                with open(filepath, "r") as f:
-                    pair = json.load(f)[str(base_idx)]
-                    results[base_idx][pair_name] = pair[pair_name]
-                pair_idx += 1
-                continue
-            logger.info("  Base: [%d/%d], Pair [%d/15] %s (ingredients %d vs %d)", base_idx + 1, len(ingredient_states), pair_idx + 1, pair_name, i, j)
-            
-            state_i = ingredient_states[i]
-            state_j = ingredient_states[j]
-            
-            # Compute barriers for each component
-            logger.info("    Computing backbone_encoder barrier...")
-            be_i = extract_subdict(state_i, be_keys)
-            be_j = extract_subdict(state_j, be_keys)
-            barrier_be, _ = compute_lmc_barrier(be_i, be_j, cfg, dataloader, [base_cls, base_reg, base_shared])
-            
-            logger.info("    Computing cls_head barrier...")
-            cls_i = extract_subdict(state_i, cls_keys)
-            cls_j = extract_subdict(state_j, cls_keys)
-            barrier_cls, _ = compute_lmc_barrier(cls_i, cls_j, cfg, dataloader, [base_be, base_reg, base_shared])
 
-            logger.info("    Computing reg_head barrier...")
-            reg_i = extract_subdict(state_i, reg_keys)
-            reg_j = extract_subdict(state_j, reg_keys)
-            barrier_reg, _ = compute_lmc_barrier(reg_i, reg_j, cfg, dataloader, [base_be, base_cls, base_shared])
-            
-            logger.info("    Computing objectness_head barrier...")
-            shared_i = extract_subdict(state_i, shared_keys)
-            shared_j = extract_subdict(state_j, shared_keys)
-            barrier_shared, _ = compute_lmc_barrier(shared_i, shared_j, cfg, dataloader, [base_be, base_cls, base_reg])
-            
-            # Full model barrier
-            logger.info("    Computing full model barrier...")
-            barrier_full, _ = compute_lmc_barrier(state_i, state_j, cfg, dataloader)
-            
-            pair = {
-                "backbone_encoder": float(barrier_be),
-                "cls_head": float(barrier_cls),
-                "reg_head": float(barrier_reg),
-                "shared": float(barrier_shared),
-                "full_model": float(barrier_full),
-            }
-            results[base_idx] = {
-                pair_name: pair
-            }
-
-            filepath = f"{RESULTS_DIR}/lmc_barriers/base{base_idx}_pair{pair_name}.json"
-            os.makedirs(os.path.dirname(filepath), exist_ok=True)
-            with open(filepath, "w") as f:
-                json.dump(results, f, indent=4)
-            
-            pair_idx += 1
-
-    filepath = f"{RESULTS_DIR}/lmc_barriers/base{base_idx}.json"
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    filepath.parent.mkdir(parents=True, exist_ok=True)
     with open(filepath, "w") as f:
-        json.dump(results, f, indent=4)
+        json.dump(pair, f, indent=4)
 
-    return base_idx, results
+    return pair_name, pair
 
 def compute_pairwise_lmc_barriers(
     ingredient_states: List[Dict[str, torch.Tensor]],
     cfg,
-    dataloader: torch.utils.data.DataLoader
+    verbose: bool = False,
 ) -> Dict[str, Dict[str, float]]:
     """
     Compute LMC barriers for all pairs of ingredients, split by component.
@@ -293,49 +344,38 @@ def compute_pairwise_lmc_barriers(
         }
     """
     logger.info("Computing pairwise LMC barriers for all 15 ingredient pairs...")
+
+    if not ANCHOR_SOUP_CKPT.exists():
+        raise FileNotFoundError(f"Anchor soup checkpoint not found: {ANCHOR_SOUP_CKPT}")
+
+    logger.info("Loading anchor soup checkpoint: %s", ANCHOR_SOUP_CKPT)
+    anchor_state = load_state(ANCHOR_SOUP_CKPT)
     
     # Extract component keys
     decoder_keys = get_decoder_keys(ingredient_states[0])
     cls_keys, reg_keys, shared_keys = split_decoder_subheads(decoder_keys)
     be_keys = get_backbone_encoder_keys(ingredient_states[0])
-    
-    # results = {}
+
+    pair_jobs = []
+    pair_index = 0
+    for i in range(len(ingredient_states)):
+        for j in range(i + 1, len(ingredient_states)):
+            pair_jobs.append((pair_index, i, j))
+            pair_index += 1
 
     ctx = mp.get_context("spawn")
-    num_processes = len(CORE_GROUPS)
-    all_jobs = []
-    base_idxs = range(len(ingredient_states))
-    import math
-    for i in range(math.ceil(len(ingredient_states) / num_processes)):
-        jobs = []
-        if i > 0:
-            i = i + num_processes
-        for base_idx in base_idxs[i:i+num_processes]:
-            if len(jobs) == num_processes:
-                # all_processes.append(tuple(processes))
-                jobs = [(ingredient_states, cfg, dataloader, base_idx, be_keys, cls_keys, reg_keys, shared_keys)]
-            else:
-                jobs.append((ingredient_states, cfg, dataloader, base_idx, be_keys, cls_keys, reg_keys, shared_keys))
-        all_jobs.append(tuple(jobs))
-
     results = {}
-    for jobs in all_jobs:
-        with ctx.Pool(processes=len(jobs), initializer=_worker_initializer, initargs=(parsed_args.verbose,)) as pool:
-            jobs = [
-                (ingredient_states, cfg, dataloader, x, be_keys, cls_keys, reg_keys, shared_keys)
-                for x in range(len(ingredient_states))
-            ]
-            # base_idx, outputs = pool.starmap(_compute_pairwise_lmc_barriers, jobs)
-            outputs = pool.starmap(_compute_pairwise_lmc_barriers, jobs)
-        # for job in jobs:
-            # base_idx, outputs = _compute_pairwise_lmc_barriers(*job)
-            for base_idx, output in outputs:
-                results[base_idx] = output[base_idx]
+    with ctx.Pool(processes=min(6, len(pair_jobs)), initializer=_worker_initializer, initargs=(verbose,)) as pool:
+        outputs = pool.starmap(
+            _compute_pairwise_lmc_barrier_worker,
+            [
+                (pair_index, i, j, ingredient_states, cfg, anchor_state, be_keys, cls_keys, reg_keys, shared_keys)
+                for pair_index, i, j in pair_jobs
+            ],
+        )
 
-    # Collect results in parent — keyed by x (ingredient index)
-    
-    # for model_idx, result in all_outputs:
-    #     results[model_idx] = result[model_idx]
+    for pair_name, pair in outputs:
+        results[pair_name] = pair
 
     logger.info("  ✓ LMC barrier computation complete")
     return results
@@ -627,236 +667,204 @@ def run_statistical_tests(
     # Extract barrier data: 15 pairs × 4 components
     components = ["backbone_encoder", "cls_head", "reg_head", "shared"]
 
-    test_results = {}
+    pair_ids = list(lmc_barriers.keys())
 
-    for base_idx, pairs in lmc_barriers.items():
-        pair_ids = list(pairs.keys())
-        
-        # Test 1: RM-ANOVA on barriers
-        logger.info("  Test 1: RM-ANOVA on barriers on base %s...", base_idx)
-        
-        # Reshape to long format: (subject, component, value)
-        barrier_long_data = []
-        for pair_idx, pair_id in enumerate(pair_ids):
-            for comp in components:
-                barrier_long_data.append({
-                    "subject": pair_idx,
-                    "component": comp,
-                    "barrier": lmc_barriers[base_idx][pair_id].get(comp, np.nan)
-                })
-        
-        df_barrier_long = pd.DataFrame(barrier_long_data)
-        
-        try:
-            anova_barrier = AnovaRM(df_barrier_long, depvar="barrier", subject="subject", within=["component"])
-            res_barrier = anova_barrier.fit()
-            f_stats = float(res_barrier.anova_table.loc["component", "F Value"]) if "F Value" in res_barrier.anova_table.columns else None
-            p_value = float(res_barrier.anova_table.loc["component", "Pr > F"]) if "Pr > F" in res_barrier.anova_table.columns else None
-            
-            test1_result = {
-                "test_name": "RM-ANOVA: Component barriers",
-                "n_pairs": len(pair_ids),
-                "components": components,
-                "f_statistic": f_stats,
-                "p_value": p_value,
-                "summary": str(res_barrier),
-            }
-            if test1_result["p_value"] is not None:
-                test1_result["interpretation"] = "Significant component differences" if test1_result["p_value"] < 0.05 else "No significant differences"
-        except Exception as e:
-            logger.warning("  ✗ RM-ANOVA failed: %s", e, exc_info=True)
-            test1_result = {"status": "error", "error": str(e)}
-        
-        # Test 3: RM-ANOVA on Hessian traces
-        logger.info("  Test 3: RM-ANOVA on Hessian traces...")
-        ingredient_ids = list(hessian_traces.keys())
-        
-        # Reshape to long format: (subject, component, value)
-        hessian_long_data = []
-        for ing_idx, ing_id in enumerate(ingredient_ids):
-            for comp in components:
-                hessian_long_data.append({
-                    "subject": ing_idx,
-                    "component": comp,
-                    "trace": hessian_traces[ing_id].get(comp, np.nan)
-                })
-        
-        df_hessian_long = pd.DataFrame(hessian_long_data)
-        
-        try:
-            anova_hessian = AnovaRM(df_hessian_long, depvar="trace", subject="subject", within=["component"])
-            res_hessian = anova_hessian.fit()
-            f_stats = float(res_hessian.anova_table.loc["component", "F Value"]) if "F Value" in res_hessian.anova_table.columns else None
-            p_value = float(res_hessian.anova_table.loc["component", "Pr > F"]) if "Pr > F" in res_hessian.anova_table.columns else None
+    # Test 1: RM-ANOVA on barriers
+    logger.info("  Test 1: RM-ANOVA on barriers across %d pairs...", len(pair_ids))
+    barrier_long_data = []
+    for pair_idx, pair_id in enumerate(pair_ids):
+        for comp in components:
+            barrier_long_data.append({
+                "subject": pair_idx,
+                "component": comp,
+                "barrier": lmc_barriers[pair_id].get(comp, np.nan),
+            })
 
-            test3_result = {
-                "test_name": "RM-ANOVA: Component Hessian traces",
-                "n_ingredients": len(ingredient_ids),
-                "components": components,
-                "f_statistic": f_stats,
-                "p_value": p_value,
-                "summary": str(res_hessian),
-            }
-            if test3_result["p_value"] is not None:
-                test3_result["interpretation"] = "Significant component differences" if test3_result["p_value"] < 0.05 else "No significant differences"
-        except Exception as e:
-            logger.warning("  ✗ Hessian RM-ANOVA failed: %s", e, exc_info=True)
-            test3_result = {"status": "error", "error": str(e)}
-        
-        # Test 2: Pearson correlations (barrier magnitude ↔ averaging gain)
-        logger.info("  Test 2: Pearson correlations (Barrier ↔ Averaging Gain)...")
-        
-        try:
-            # Load Phase 3 soup results
-            phase3_results_path = Path(RESULTS_DIR).parent / "phase3_soup_results.json"
-            
-            if not phase3_results_path.exists():
-                logger.warning("  ✗ Phase 3 results not found at %s", phase3_results_path)
-                test2_result = {
-                    "test_name": "Pearson: Barrier ↔ Performance Gain",
-                    "status": "error",
-                    "error": f"Phase 3 results not found at {phase3_results_path}",
-                    "bonferroni_alpha": 0.0125,
-                }
-            else:
-                with open(phase3_results_path, "r") as f:
-                    phase3_data = json.load(f)
-                
-                # Extract baseline and condition gains (mAP@50-95)
-                baseline_map = phase3_data.get("best_individual", {}).get("map50_95", None)
-                
-                if baseline_map is None:
-                    logger.warning("  ✗ Baseline mAP@50-95 not found in Phase 3 results")
-                    test2_result = {
-                        "test_name": "Pearson: Barrier ↔ Performance Gain",
-                        "status": "error",
-                        "error": "Baseline mAP@50-95 not found",
-                        "bonferroni_alpha": 0.0125,
-                    }
-                else:
-                    # Extract gains for 4 soup conditions
-                    conditions = ["condition_1", "condition_2", "condition_3", "condition_4"]
-                    gains = {}
-                    for cond in conditions:
-                        if cond in phase3_data:
-                            cond_map = phase3_data[cond].get("map50_95", None)
-                            if cond_map is not None:
-                                gains[cond] = cond_map - baseline_map
-                    
-                    if len(gains) < 4:
-                        logger.warning("  ✗ Not all 4 condition gains found in Phase 3 results")
-                        test2_result = {
-                            "test_name": "Pearson: Barrier ↔ Performance Gain",
-                            "status": "error",
-                            "error": f"Only {len(gains)}/4 condition gains found",
-                            "bonferroni_alpha": 0.0125,
-                        }
-                    else:
-                        # Compute average barrier per component and correlate with average gain
-                        # Strategy: For each component, we have 15 barrier values (from 15 pairs).
-                        # We correlate the component barrier values with the average gain from all conditions.
-                        avg_gain_across_conditions = float(np.mean(list(gains.values())))
-                        
-                        correlations_by_component = {}
-                        
-                        for comp in components:
-                            # Collect all barrier values for this component across all pairs
-                            barrier_values = []
-                            pair_list = []
-                            for pair_id, pair_barriers in pairs.items():
-                                if comp in pair_barriers:
-                                    barrier_values.append(pair_barriers[comp])
-                                    pair_list.append(pair_id)
-                            
-                            if not barrier_values:
-                                logger.warning("    No barrier data for component: %s", comp)
-                                correlations_by_component[comp] = {
-                                    "r": None,
-                                    "p_value": None,
-                                    "n_pairs": 0,
-                                    "note": "No barrier data available"
-                                }
-                                continue
-                            
-                            # For each barrier value, pair it with the average gain
-                            # This represents: "How difficult is this pair to interpolate (barrier)
-                            # vs. how much gain does averaging provide (avg gain)"
-                            x_data = barrier_values  # 15 barrier values
-                            y_data = [avg_gain_across_conditions] * len(barrier_values)  # Replicate avg gain for 15 pairs
-                            
-                            # Alternative: correlate component barriers with per-condition gains
-                            # by assigning each pair to a condition based on ingredient modulo
-                            if len(barrier_values) >= 4 and len(barrier_values) % 4 == 0:
-                                # Assign pairs to conditions cyclically
-                                gains_list = [gains[f"condition_{i+1}"] for i in range(4)]
-                                y_data = []
-                                for idx in range(len(barrier_values)):
-                                    condition_idx = idx % 4
-                                    y_data.append(gains_list[condition_idx])
-                            
-                            # Compute statistics
-                            mean_barrier = float(np.mean(barrier_values))
-                            std_barrier = float(np.std(barrier_values)) if len(barrier_values) > 1 else 0.0
-                            
-                            # Compute Pearson correlation
-                            try:
-                                if len(set(x_data)) <= 1 or len(set(y_data)) <= 1:  # No variance
-                                    r = np.nan
-                                    p_val = np.nan
-                                    logger.debug("    Component '%s': Insufficient variance in data", comp)
-                                else:
-                                    r, p_val = pearsonr(x_data, y_data)
-                                
-                                correlations_by_component[comp] = {
-                                    "r": float(r) if not np.isnan(r) else None,
-                                    "p_value": float(p_val) if not np.isnan(p_val) else None,
-                                    "n_pairs": len(barrier_values),
-                                    "n_conditions": 4,
-                                    "mean_barrier": mean_barrier,
-                                    "std_barrier": std_barrier,
-                                    "min_barrier": float(min(barrier_values)),
-                                    "max_barrier": float(max(barrier_values)),
-                                    "barrier_values_sample": [float(b) for b in barrier_values[:3]],  # First 3 for inspection
-                                    "interpretation": "Significant" if (not np.isnan(p_val) and p_val < 0.0125) else "Not significant at Bonferroni α=0.0125",
-                                }
-                            except Exception as e:
-                                logger.warning("    Pearson correlation failed for %s: %s", comp, e)
-                                correlations_by_component[comp] = {
-                                    "r": None,
-                                    "p_value": None,
-                                    "n_pairs": len(barrier_values),
-                                    "error": str(e)
-                                }
-                        
-                        test2_result = {
-                            "test_name": "Pearson: Barrier ↔ Performance Gain",
-                            "status": "completed",
-                            "bonferroni_alpha": 0.0125,
-                            "n_components": len(components),
-                            "baseline_map50_95": baseline_map,
-                            "condition_gains_map50_95": gains,
-                            "average_gain_across_conditions": avg_gain_across_conditions,
-                            "correlations_by_component": correlations_by_component,
-                            "summary": f"Tested correlation between component barriers ({len(barrier_values)} pairs) and averaging gains across {len(gains)} conditions",
-                            "method": "Pearson r between per-pair barriers and cyclically-assigned condition gains"
-                        }
-                
-        except Exception as e:
-            logger.warning("  ✗ Pearson correlation test failed: %s", e, exc_info=True)
+    df_barrier_long = pd.DataFrame(barrier_long_data)
+
+    try:
+        anova_barrier = AnovaRM(df_barrier_long, depvar="barrier", subject="subject", within=["component"])
+        res_barrier = anova_barrier.fit()
+        f_stats = float(res_barrier.anova_table.loc["component", "F Value"]) if "F Value" in res_barrier.anova_table.columns else None
+        p_value = float(res_barrier.anova_table.loc["component", "Pr > F"]) if "Pr > F" in res_barrier.anova_table.columns else None
+
+        test1_result = {
+            "test_name": "RM-ANOVA: Component barriers",
+            "n_pairs": len(pair_ids),
+            "components": components,
+            "f_statistic": f_stats,
+            "p_value": p_value,
+            "summary": str(res_barrier),
+        }
+        if test1_result["p_value"] is not None:
+            test1_result["interpretation"] = "Significant component differences" if test1_result["p_value"] < 0.05 else "No significant differences"
+    except Exception as e:
+        logger.warning("  ✗ RM-ANOVA failed: %s", e, exc_info=True)
+        test1_result = {"status": "error", "error": str(e)}
+
+    # Test 3: RM-ANOVA on Hessian traces
+    logger.info("  Test 3: RM-ANOVA on Hessian traces...")
+    ingredient_ids = list(hessian_traces.keys())
+
+    hessian_long_data = []
+    for ing_idx, ing_id in enumerate(ingredient_ids):
+        for comp in components:
+            hessian_long_data.append({
+                "subject": ing_idx,
+                "component": comp,
+                "trace": hessian_traces[ing_id].get(comp, np.nan),
+            })
+
+    df_hessian_long = pd.DataFrame(hessian_long_data)
+
+    try:
+        anova_hessian = AnovaRM(df_hessian_long, depvar="trace", subject="subject", within=["component"])
+        res_hessian = anova_hessian.fit()
+        f_stats = float(res_hessian.anova_table.loc["component", "F Value"]) if "F Value" in res_hessian.anova_table.columns else None
+        p_value = float(res_hessian.anova_table.loc["component", "Pr > F"]) if "Pr > F" in res_hessian.anova_table.columns else None
+
+        test3_result = {
+            "test_name": "RM-ANOVA: Component Hessian traces",
+            "n_ingredients": len(ingredient_ids),
+            "components": components,
+            "f_statistic": f_stats,
+            "p_value": p_value,
+            "summary": str(res_hessian),
+        }
+        if test3_result["p_value"] is not None:
+            test3_result["interpretation"] = "Significant component differences" if test3_result["p_value"] < 0.05 else "No significant differences"
+    except Exception as e:
+        logger.warning("  ✗ Hessian RM-ANOVA failed: %s", e, exc_info=True)
+        test3_result = {"status": "error", "error": str(e)}
+
+    # Test 2: Pearson correlations (barrier magnitude ↔ averaging gain)
+    logger.info("  Test 2: Pearson correlations (Barrier ↔ Averaging Gain)...")
+
+    try:
+        phase3_results_path = Path(RESULTS_DIR).parent / "phase3_soup_results.json"
+
+        if not phase3_results_path.exists():
+            logger.warning("  ✗ Phase 3 results not found at %s", phase3_results_path)
             test2_result = {
                 "test_name": "Pearson: Barrier ↔ Performance Gain",
                 "status": "error",
-                "error": str(e),
+                "error": f"Phase 3 results not found at {phase3_results_path}",
                 "bonferroni_alpha": 0.0125,
             }
-        
-        test_results[base_idx] = {
-            "test_1_barrier_anova": test1_result,
-            "test_2_pearson_correlations": test2_result,
-            "test_3_hessian_anova": test3_result,
+        else:
+            with open(phase3_results_path, "r") as f:
+                phase3_data = json.load(f)
+
+            baseline_map = phase3_data.get("best_individual", {}).get("map50_95", None)
+
+            if baseline_map is None:
+                logger.warning("  ✗ Baseline mAP@50-95 not found in Phase 3 results")
+                test2_result = {
+                    "test_name": "Pearson: Barrier ↔ Performance Gain",
+                    "status": "error",
+                    "error": "Baseline mAP@50-95 not found",
+                    "bonferroni_alpha": 0.0125,
+                }
+            else:
+                conditions = ["condition_1", "condition_2", "condition_3", "condition_4"]
+                gains = {}
+                for cond in conditions:
+                    if cond in phase3_data:
+                        cond_map = phase3_data[cond].get("map50_95", None)
+                        if cond_map is not None:
+                            gains[cond] = cond_map - baseline_map
+
+                if len(gains) < 4:
+                    logger.warning("  ✗ Not all 4 condition gains found in Phase 3 results")
+                    test2_result = {
+                        "test_name": "Pearson: Barrier ↔ Performance Gain",
+                        "status": "error",
+                        "error": f"Only {len(gains)}/4 condition gains found",
+                        "bonferroni_alpha": 0.0125,
+                    }
+                else:
+                    avg_gain_across_conditions = float(np.mean(list(gains.values())))
+                    correlations_by_component = {}
+
+                    for comp in components:
+                        barrier_values = [pair_barriers[comp] for pair_barriers in lmc_barriers.values() if comp in pair_barriers]
+
+                        if not barrier_values:
+                            logger.warning("    No barrier data for component: %s", comp)
+                            correlations_by_component[comp] = {
+                                "r": None,
+                                "p_value": None,
+                                "n_pairs": 0,
+                                "note": "No barrier data available",
+                            }
+                            continue
+
+                        x_data = barrier_values
+                        y_data = [avg_gain_across_conditions] * len(barrier_values)
+
+                        if len(barrier_values) >= 4 and len(barrier_values) % 4 == 0:
+                            gains_list = [gains[f"condition_{i+1}"] for i in range(4)]
+                            y_data = [gains_list[idx % 4] for idx in range(len(barrier_values))]
+
+                        mean_barrier = float(np.mean(barrier_values))
+                        std_barrier = float(np.std(barrier_values)) if len(barrier_values) > 1 else 0.0
+
+                        try:
+                            if len(set(x_data)) <= 1 or len(set(y_data)) <= 1:
+                                r = np.nan
+                                p_val = np.nan
+                                logger.debug("    Component '%s': Insufficient variance in data", comp)
+                            else:
+                                r, p_val = pearsonr(x_data, y_data)
+
+                            correlations_by_component[comp] = {
+                                "r": float(r) if not np.isnan(r) else None,
+                                "p_value": float(p_val) if not np.isnan(p_val) else None,
+                                "n_pairs": len(barrier_values),
+                                "n_conditions": 4,
+                                "mean_barrier": mean_barrier,
+                                "std_barrier": std_barrier,
+                                "min_barrier": float(min(barrier_values)),
+                                "max_barrier": float(max(barrier_values)),
+                                "barrier_values_sample": [float(b) for b in barrier_values[:3]],
+                                "interpretation": "Significant" if (not np.isnan(p_val) and p_val < 0.0125) else "Not significant at Bonferroni α=0.0125",
+                            }
+                        except Exception as e:
+                            logger.warning("    Pearson correlation failed for %s: %s", comp, e)
+                            correlations_by_component[comp] = {
+                                "r": None,
+                                "p_value": None,
+                                "n_pairs": len(barrier_values),
+                                "error": str(e),
+                            }
+
+                    test2_result = {
+                        "test_name": "Pearson: Barrier ↔ Performance Gain",
+                        "status": "completed",
+                        "bonferroni_alpha": 0.0125,
+                        "n_components": len(components),
+                        "baseline_map50_95": baseline_map,
+                        "condition_gains_map50_95": gains,
+                        "average_gain_across_conditions": avg_gain_across_conditions,
+                        "correlations_by_component": correlations_by_component,
+                        "summary": f"Tested correlation between component barriers ({len(barrier_values)} pairs) and averaging gains across {len(gains)} conditions",
+                        "method": "Pearson r between per-pair barriers and cyclically-assigned condition gains",
+                    }
+
+    except Exception as e:
+        logger.warning("  ✗ Pearson correlation test failed: %s", e, exc_info=True)
+        test2_result = {
+            "test_name": "Pearson: Barrier ↔ Performance Gain",
+            "status": "error",
+            "error": str(e),
+            "bonferroni_alpha": 0.0125,
         }
-    
-    return test_results
+
+    return {
+        "test_1_barrier_anova": test1_result,
+        "test_2_pearson_correlations": test2_result,
+        "test_3_hessian_anova": test3_result,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -889,15 +897,13 @@ def plot_lmc_barriers(
     
     # Extract barrier data by component
     barrier_data_by_component = {comp: [] for comp in components}
-    pair_names = []
-    
-    for base_idx, pairs in lmc_barriers.items():
-        for pair_id in sorted(pairs.keys()):
-            if pair_id not in pair_names:
-                pair_names.append(pair_id)
-            for comp in components:
-                if comp in pairs[pair_id]:
-                    barrier_data_by_component[comp].append(pairs[pair_id][comp])
+    pair_names = sorted(lmc_barriers.keys())
+
+    for pair_id in pair_names:
+        pair = lmc_barriers[pair_id]
+        for comp in components:
+            if comp in pair:
+                barrier_data_by_component[comp].append(pair[comp])
     
     # 1. Heatmap: pairs × components
     fig, ax = plt.subplots(figsize=(12, 8))
@@ -906,7 +912,7 @@ def plot_lmc_barriers(
         for i in range(len(pair_names))
     ])
     
-    sns.heatmap(barrier_matrix, annot=True, fmt=".3f", cmap="RdYlGn_r", 
+    sns.heatmap(barrier_matrix, annot=True, fmt=".3f", cmap="cividis", 
                 xticklabels=components, yticklabels=pair_names,
                 cbar_kws={"label": "Loss Barrier"}, ax=ax)
     ax.set_title("LMC Barriers Heatmap: All Ingredient Pairs × Components", fontsize=14, fontweight="bold")
@@ -990,7 +996,7 @@ def plot_hessian_traces(
     
     # 1. Heatmap: ingredients × components
     fig, ax = plt.subplots(figsize=(10, 6))
-    sns.heatmap(trace_matrix, annot=True, fmt=".2f", cmap="YlOrRd",
+    sns.heatmap(trace_matrix, annot=True, fmt=".2f", cmap="cividis",
                 xticklabels=components, yticklabels=ingredient_ids,
                 cbar_kws={"label": "Hessian Trace"}, ax=ax)
     ax.set_title("Hessian Traces Heatmap: Ingredients × Components", fontsize=14, fontweight="bold")
@@ -1068,44 +1074,54 @@ def plot_statistical_tests(
     logger.info("  Visualizing statistical test results...")
     
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _format_stat(value: Any, precision: str = ".3f") -> str:
+        if value is None:
+            return "N/A"
+        try:
+            if isinstance(value, (int, float, np.floating)) and np.isnan(value):
+                return "N/A"
+            return format(float(value), precision)
+        except Exception:
+            return str(value)
     
-    # Extract test results (assuming single base_idx for simplicity)
-    base_idx = list(test_results.keys())[0]
-    test1 = test_results[base_idx].get("test_1_barrier_anova", {})
-    test2 = test_results[base_idx].get("test_2_pearson_correlations", {})
-    test3 = test_results[base_idx].get("test_3_hessian_anova", {})
+    # Support both the new flat structure and the old nested structure.
+    if "test_1_barrier_anova" in test_results:
+        test1 = test_results.get("test_1_barrier_anova", {})
+        test2 = test_results.get("test_2_pearson_correlations", {})
+        test3 = test_results.get("test_3_hessian_anova", {})
+    else:
+        first_key = list(test_results.keys())[0]
+        test1 = test_results[first_key].get("test_1_barrier_anova", {})
+        test2 = test_results[first_key].get("test_2_pearson_correlations", {})
+        test3 = test_results[first_key].get("test_3_hessian_anova", {})
     
-    # 1. ANOVA F-statistics comparison (Test 1 vs Test 3)
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-    
-    # Test 1: Barrier ANOVA
-    test_names_1 = ["Barrier ANOVA"]
-    f_stats_1 = [test1.get("f_statistic", 0)]
-    p_vals_1 = [test1.get("p_value", 1)]
-    
-    colors_1 = ["red" if p < 0.05 else "blue" for p in p_vals_1]
-    ax1.bar(test_names_1, f_stats_1, color=colors_1, alpha=0.7, edgecolor="black")
-    ax1.set_ylabel("F-Statistic", fontsize=12)
-    ax1.set_title("Test 1: RM-ANOVA on Component Barriers", fontsize=12, fontweight="bold")
-    ax1.text(0, f_stats_1[0], f'p={p_vals_1[0]:.4f}', ha='center', va='bottom', fontsize=10)
-    ax1.grid(axis="y", alpha=0.3)
-    
-    # Test 3: Hessian ANOVA
-    test_names_3 = ["Hessian ANOVA"]
-    f_stats_3 = [test3.get("f_statistic", 0)]
-    p_vals_3 = [test3.get("p_value", 1)]
-    
-    colors_3 = ["red" if p < 0.05 else "blue" for p in p_vals_3]
-    ax2.bar(test_names_3, f_stats_3, color=colors_3, alpha=0.7, edgecolor="black")
-    ax2.set_ylabel("F-Statistic", fontsize=12)
-    ax2.set_title("Test 3: RM-ANOVA on Hessian Traces", fontsize=12, fontweight="bold")
-    ax2.text(0, f_stats_3[0], f'p={p_vals_3[0]:.4f}', ha='center', va='bottom', fontsize=10)
-    ax2.grid(axis="y", alpha=0.3)
-    
-    plt.tight_layout()
-    plt.savefig(output_dir / "statistical_anova_results.png", dpi=150, bbox_inches="tight")
-    plt.close()
-    logger.info("    → statistical_anova_results.png")
+    # 1. ANOVA results are written as native text, not rasterized into an image.
+    anova_summary_path = output_dir / "statistical_anova_summary.md"
+    anova_summary_text = "\n".join([
+        "# Statistical Validation Summary",
+        "",
+        "## Test 1: RM-ANOVA on Component Barriers",
+        f"- F-statistic: {_format_stat(test1.get('f_statistic'))}",
+        f"- p-value: {_format_stat(test1.get('p_value'), '.4f')}",
+        f"- Interpretation: {test1.get('interpretation', 'N/A')}",
+        "",
+        "## Test 3: RM-ANOVA on Hessian Traces",
+        f"- F-statistic: {_format_stat(test3.get('f_statistic'))}",
+        f"- p-value: {_format_stat(test3.get('p_value'), '.4f')}",
+        f"- Interpretation: {test3.get('interpretation', 'N/A')}",
+        "",
+        "## Native Table",
+        "| Test | Name | Statistic | p-value | Interpretation |",
+        "| --- | --- | --- | --- | --- |",
+        f"| Test 1 | Barrier ANOVA | {_format_stat(test1.get('f_statistic'))} | {_format_stat(test1.get('p_value'), '.4f')} | {test1.get('interpretation', 'N/A')} |",
+        f"| Test 3 | Hessian ANOVA | {_format_stat(test3.get('f_statistic'))} | {_format_stat(test3.get('p_value'), '.4f')} | {test3.get('interpretation', 'N/A')} |",
+    ])
+    with open(anova_summary_path, "w") as f:
+        f.write(anova_summary_text + "\n")
+    logger.info("    → %s", anova_summary_path)
+    logger.info("    Test 1 (Barrier ANOVA): F=%s, p=%s", _format_stat(test1.get("f_statistic")), _format_stat(test1.get("p_value"), ".4f"))
+    logger.info("    Test 3 (Hessian ANOVA): F=%s, p=%s", _format_stat(test3.get("f_statistic")), _format_stat(test3.get("p_value"), ".4f"))
     
     # 2. Pearson correlations (Test 2)
     corr_by_comp = test2.get("correlations_by_component", {})
@@ -1146,36 +1162,6 @@ def plot_statistical_tests(
         plt.close()
         logger.info("    → statistical_pearson_results.png")
     
-    # 3. Summary comparison table (as text image)
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ax.axis("tight")
-    ax.axis("off")
-    
-    summary_data = [
-        ["Test", "Name", "Statistic", "p-value", "Interpretation"],
-        ["Test 1", "Barrier ANOVA", f"{test1.get('f_statistic', 'N/A'):.3f}", 
-         f"{test1.get('p_value', 'N/A'):.4f}", test1.get("interpretation", "N/A")],
-        ["Test 3", "Hessian ANOVA", f"{test3.get('f_statistic', 'N/A'):.3f}", 
-         f"{test3.get('p_value', 'N/A'):.4f}", test3.get("interpretation", "N/A")],
-        ["Test 2", "Pearson Corr.", "Per component", "Per component", 
-         f"{sum(1 for c in corr_by_comp.values() if c.get('p_value', 1) and c.get('p_value', 1) < 0.0125)}/4 significant"],
-    ]
-    
-    table = ax.table(cellText=summary_data, cellLoc="center", loc="center",
-                    colWidths=[0.12, 0.25, 0.2, 0.15, 0.28])
-    table.auto_set_font_size(False)
-    table.set_fontsize(10)
-    table.scale(1, 2)
-    
-    # Style header row
-    for i in range(len(summary_data[0])):
-        table[(0, i)].set_facecolor("#4CAF50")
-        table[(0, i)].set_text_props(weight="bold", color="white")
-    
-    plt.title("Statistical Test Results Summary", fontsize=14, fontweight="bold", pad=20)
-    plt.savefig(output_dir / "statistical_summary.png", dpi=150, bbox_inches="tight")
-    plt.close()
-    logger.info("    → statistical_summary.png")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1235,29 +1221,29 @@ def run(verbose: bool = True, force_recompute: list = []) -> Dict[str, Any]:
         
         # Build Detectron2 config
         logger.info("\n[2/4] Building Detectron2 config...")
-        cfgs = [build_eval_cfg(EVAL_DATASET, str(cfg_path), ckpt_file) for cfg_path, ckpt_file in zip(cfg_paths, ingredient_paths)]
-        base_cfg = build_eval_cfg(EVAL_DATASET)
+        cfgs = [build_eval_cfg(CALIB_DATASET, str(cfg_path), ckpt_file) for cfg_path, ckpt_file in zip(cfg_paths, ingredient_paths)]
+        base_cfg = build_eval_cfg(CALIB_DATASET)
         logger.info("  ✓ Config ready")
         
         # Build evaluation dataloader
         logger.info("\n[3/4] Building evaluation dataloader...")
-        dataloader = build_eval_dataloader(cfgs[0], EVAL_DATASET, num_workers=0, batch_size=4, max_img_per_cls=3)
+        dataloader = build_eval_dataloader(cfgs[0], CALIB_DATASET, num_workers=0, batch_size=4, max_img_per_cls=3)
         logger.info("  ✓ Dataloader ready")
         
         # Compute pairwise LMC barriers
         logger.info("\n[4/4a] Computing pairwise LMC barriers (15 pairs)...")
-        barriers_json = results_dir / "phase4_lmc_barriers.json"
+        barriers_json = results_dir / f"phase4_lmc_barriers_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.json"
         if os.path.exists(barriers_json) and ("lmc" not in force_recompute):
             logger.info("  [SKIP] LMC barriers already exist at %s", barriers_json)
             with open(barriers_json, "r") as f:
                 lmc_barriers = json.load(f)
         else:
-            lmc_barriers = compute_pairwise_lmc_barriers(ingredient_states, base_cfg, dataloader)
+            lmc_barriers = compute_pairwise_lmc_barriers(ingredient_states, base_cfg, verbose=verbose)
         
-        dataloader = build_eval_dataloader(cfgs[0], EVAL_DATASET)
+        dataloader = build_eval_dataloader(cfgs[0], CALIB_DATASET)
         # Compute Hessian traces
         logger.info("\n[4/4b] Computing Hessian traces for 6 ingredients...")
-        traces_json = results_dir / "phase4_hessian_traces.json"
+        traces_json = results_dir / f"phase4_hessian_traces_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.json"
         if os.path.exists(traces_json) and ("hessian_traces" not in force_recompute or "hs" not in force_recompute):
             logger.info("  [SKIP] Hessian traces already exist at %s", traces_json)
             with open(traces_json, "r") as f:
@@ -1267,7 +1253,7 @@ def run(verbose: bool = True, force_recompute: list = []) -> Dict[str, Any]:
         
         # Run statistical tests
         logger.info("\n[4/4c] Running statistical tests...")
-        tests_json = results_dir / "phase4_statistical_tests.json"
+        tests_json = results_dir / f"phase4_statistical_tests_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.json"
         if os.path.exists(tests_json) and "stats" not in force_recompute:
             logger.info("  [SKIP] Statistical tests already exist at %s", tests_json)
             with open(tests_json, "r") as f:

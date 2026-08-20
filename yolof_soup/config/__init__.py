@@ -20,13 +20,8 @@ from .experiment_config import (
     PHASE2_OUTPUT_DIR,
     # Dataset identifiers
     TRAIN_DATASET,
-    SELECTION_DATASET,
     EVAL_DATASET,
-    VOC_DATASET,
-    # SELECTION_ANN,
     COCO_VAL_ANN,
-    VOC_ANN,
-    # Checkpoint paths
     N_INGREDIENTS,
     PRETRAINED_WEIGHTS,
     DECODER_CKPT_PATHS,
@@ -37,10 +32,9 @@ from .experiment_config import (
     UNIFORM_SOUP_CKPT,
     GLOBAL_SOUP_CKPT,
     # Soup-construction
-    LAMBDA_GRID,
+    CD_LAMBDA_GRID,
     MAX_CD_PASSES,
     CONVERGE_TOL,
-    SELECTION_EVAL_MAX_IMGS,
     # Loss landscape
     LMC_ALPHA_STEPS,
     SAM_RHO,
