@@ -11,7 +11,7 @@ MODEL:
 
 SOLVER:
   OPTIMIZER: "SGD"
-  BASE_LR: 0.00001
+  BASE_LR: 0.001
   WEIGHT_DECAY: 0.0001
   MOMENTUM: 0.9
   IMS_PER_BATCH: 16          # local default (overridden on cloud)
@@ -26,10 +26,6 @@ INPUT:
   MAX_SIZE_TRAIN: 1333
   MIN_SIZE_TEST: 800
   MAX_SIZE_TEST: 1333
-
-DATASETS:
-  TRAIN: ("coco2017_train",)
-  TEST: ("coco2017_val",)
 
 TEST:
   EVAL_PERIOD: 1

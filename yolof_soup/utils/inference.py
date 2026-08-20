@@ -8,13 +8,10 @@ from detectron2.checkpoint import DetectionCheckpointer
 
 
 class EvaluateModel():
-    def __init__(self, cfg, state_dict: Dict[str, torch.Tensor]=None, train_mode=False):
+    def __init__(self, cfg, state_dict: Dict[str, torch.Tensor]=None):
         self.cfg = cfg.clone()  # cfg can be modified by model
         self.model = build_model(self.cfg)
-        if train_mode:
-            self.model.train()
-        else:
-            self.model.eval()
+        self.model.eval()
         if len(cfg.DATASETS.TEST):
             self.metadata = MetadataCatalog.get(cfg.DATASETS.TEST[0])
 
@@ -35,12 +32,8 @@ class EvaluateModel():
         assert self.input_format in ["RGB", "BGR"], self.input_format
 
     def _predict(self, original_image, return_val_loss, beta):
-        preds = self.model([original_image], return_val_loss=return_val_loss, beta=beta)
-
-        if isinstance(preds, list):
-            return preds[0]
-        return preds
-
+        return self.model([original_image], return_val_loss=return_val_loss, beta=beta)[0]
+    
     def predict(self, original_images, return_val_loss, beta):
         predictions = []
         for original_image in original_images:
@@ -63,13 +56,6 @@ class EvaluateModel():
     def to(self, device):
         self.model.to(device)
         return self
-    
-    def zero_grad(self, set_to_none=False):
-        self.model.zero_grad(set_to_none=set_to_none)
-        return self
-    
-    def named_parameters(self, recurse=True):
-        return self.model.named_parameters(recurse=recurse)
     
 
 class BNCalibration():
