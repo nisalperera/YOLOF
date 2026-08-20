@@ -111,20 +111,19 @@ class Decoder(nn.Module):
         if self.freeze_at == 0:
             pass  # No freezing, allow all parameters to be updated during training
         elif self.freeze_at == -1:
-            for p in self.parameters():
-                p.requires_grad = False
+            ValueError("Cannot freeze decoder when FREEZE_AT is set to -1.")
         else:
-            if self.freeze_at == 1:
+            if self.freeze_at >= 1:
                 for p in self.cls_subnet.parameters():
                     p.requires_grad = False
                 for p in self.bbox_subnet.parameters():
                     p.requires_grad = False
 
-            elif self.freeze_at == 2:
+            if self.freeze_at == 2:
                 for p in self.cls_score.parameters():
                     p.requires_grad = False
 
-            elif self.freeze_at == 3:
+            if self.freeze_at == 3:
                 for p in self.bbox_pred.parameters():
                     p.requires_grad = False
                 for p in self.object_pred.parameters():
