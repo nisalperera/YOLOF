@@ -93,13 +93,8 @@ class DilatedEncoder(nn.Module):
 
         elif self.freeze_at == True or self.freeze_at == -1:
             # Freeze entire encoder
-            self.lateral_conv.requires_grad_(False)
-            if self.lateral_norm is not None:
-                self.lateral_norm.requires_grad_(False)
-            self.fpn_conv.requires_grad_(False)
-            if self.fpn_norm is not None:
-                self.fpn_norm.requires_grad_(False)
-            self.dilated_encoder_blocks.requires_grad_(False)
+            for p in self.parameters():
+                p.requires_grad = False
 
         else:
             if self.freeze_at == True or self.freeze_at >= len(self.dilated_encoder_blocks):

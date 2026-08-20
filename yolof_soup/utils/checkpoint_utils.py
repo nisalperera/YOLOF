@@ -11,6 +11,7 @@ Wraps:
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -81,3 +82,14 @@ def save_ingredients(
     metas = metadatas or [None] * len(paths)
     for p, sd, m in zip(paths, state_dicts, metas):
         save_checkpoint(p, sd, metadata=m)
+
+def save_metadata(path: str | Path, metadata: Dict[str, Any]) -> None:
+    """
+    Save a metadata dict to a json file.
+    Parent directories are created automatically.
+    """
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w+") as f:
+        json.dump(metadata, f, indent=4)
+    logger.info("Metadata saved → %s", path)
