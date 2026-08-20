@@ -1,0 +1,104 @@
+stages:
+
+  train_pool:
+    desc: "Step 3-4: Hyperparameter-diverse pool training (L1-L4, R1-R2)"
+    cmd: bash yolof_soup/run_all_experiments.sh
+    deps:
+      - yolof_soup/config/
+      - yolof_soup/run_all_experiments.sh
+    outs:
+      - outputs/checkpoints/
+    metrics:
+      - outputs/metrics/ingredient_quality.json:
+          cache: false
+
+  pilot_divergence_check:
+    desc: "Step 2b: Pilot divergence check before committing full compute"
+    cmd: python yolof_soup/run_phases_2b_to_7.py --stage pilot
+    deps:
+      - yolof_soup/run_phases_2b_to_7.py
+      - outputs/checkpoints/
+    metrics:
+      - outputs/metrics/pilot_divergence.json:
+          cache: false
+
+  quality_audit:
+    desc: "Step 5: Ingredient quality audit on COCO val2017"
+    cmd: python yolof_soup/experiments/quality_audit.py
+    deps:
+      - yolof_soup/experiments/quality_audit.py
+      - outputs/checkpoints/
+    metrics:
+      - outputs/metrics/quality_audit.json:
+          cache: false
+
+  loss_landscape:
+    desc: "Step 6: Per-component LMC barrier and Hessian trace measurement (MV1, MV2)"
+    cmd: python yolof_soup/experiments/loss_landscape.py
+    deps:
+      - yolof_soup/experiments/loss_landscape.py
+      - outputs/checkpoints/
+    outs:
+      - outputs/loss_landscape/
+    metrics:
+      - outputs/metrics/loss_landscape_summary.json:
+          cache: false
+
+  soup_construction:
+    desc: "Step 7: All six merging conditions (C1-C6)"
+    cmd: python yolof_soup/experiments/soup_construction.py
+    deps:
+      - yolof_soup/experiments/soup_construction.py
+      - yolof_soup/experiments/coefficient_strategy_test.py
+      - yolof_soup/experiments/greedy_soup.py
+      - yolof_soup/experiments/greedy_be_tri_head.py
+      - outputs/checkpoints/
+    outs:
+      - outputs/soups/
+    metrics:
+      - outputs/metrics/soup_conditions.json:
+          cache: false
+
+  preregistration:
+    desc: "Step 8: Pre-register D1 and D2 source checkpoints before fine-tuning"
+    cmd: python yolof_soup/experiments/preregistration.py
+    deps:
+      - yolof_soup/experiments/preregistration.py
+      - outputs/soups/
+    outs:
+      - outputs/preregistration/
+
+  head_finetuning:
+    desc: "Step 9-10: Decoder-only fine-tuning runs (D1, D2, C3)"
+    cmd: python yolof_soup/experiments/head_finetuning.py
+    deps:
+      - yolof_soup/experiments/head_finetuning.py
+      - outputs/soups/
+      - outputs/preregistration/
+    outs:
+      - outputs/finetuned/
+    metrics:
+      - outputs/metrics/finetuning_results.json:
+          cache: false
+
+  statistical_analysis:
+    desc: "Step 11: Statistical tests for RQ1-RQ4 (paired t-tests, RM ANOVA, bootstrap CIs)"
+    cmd: python yolof_soup/experiments/statistical_analysis.py
+    deps:
+      - yolof_soup/experiments/statistical_analysis.py
+      - outputs/metrics/
+    outs:
+      - outputs/stats/
+    metrics:
+      - outputs/stats/hypothesis_decisions.json:
+          cache: false
+
+  final_eval:
+    desc: "Step 12: Final evaluation on COCO test-dev2017"
+    cmd: python yolof_soup/experiments/final_test.py
+    deps:
+      - yolof_soup/experiments/final_test.py
+      - outputs/finetuned/
+    metrics:
+      - outputs/metrics/final_test_dev.json:
+          cache: false
