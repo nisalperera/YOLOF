@@ -62,6 +62,7 @@ from yolof.utils.events import WandBWriter
 from yolof.hooks import GradCAMHook, BestCheckpointerAPARF1, EarlyStoppingHook
 from yolof.evaluation.coco_ar_ap import COCOEvaluatorWithAPandAR
 from yolof.data.samplers import EvenlyDistributedInferenceSampler
+from yolof_soup.config.experiment_config import COCO_OI_VAL_IMG_DIR
 
 
 class Trainer(DefaultTrainer):
@@ -264,22 +265,43 @@ def setup(args):
     root_dir = Path(__file__).resolve().parents[1]
 
     # Define paths for your datasets (assuming they were created)
-    thing_classes = []
+    cfg = get_cfg()
+    cfg.set_new_allowed(True)
+    cfg.merge_from_file(args.config_file)
+    cfg.merge_from_list(args.opts)
 
     try:
-        TRAIN_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_train2017.json'
-        TRAIN_IMG_DIR = f'{root_dir}/datasets/coco/images/train2017'
-        VAL_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_val2017.json'
-        VAL_IMG_DIR = f'{root_dir}/datasets/coco/images/val2017'
+        if "coco2017" in cfg.DATASETS.TRAIN[0] and "coco2017" in cfg.DATASETS.TEST[0]:
+            COCO_TRAIN_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_train2017.json'
+            COCO_TRAIN_IMG_DIR = f'{root_dir}/datasets/coco/images/train2017'
+            COCO_VAL_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_val2017.json'
+            COCO_VAL_IMG_DIR = f'{root_dir}/datasets/coco/images/val2017'
 
-        with open(TRAIN_ANN_FILE, "r") as r:
-            thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
+            with open(COCO_TRAIN_ANN_FILE, "r") as r:
+                coco_thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
 
-        register_coco_instances("coco2017_train", {}, TRAIN_ANN_FILE, TRAIN_IMG_DIR)
-        register_coco_instances("coco2017_val", {}, VAL_ANN_FILE, VAL_IMG_DIR)
+            register_coco_instances("coco2017_train", {}, COCO_TRAIN_ANN_FILE, COCO_TRAIN_IMG_DIR)
+            register_coco_instances("coco2017_val", {}, COCO_VAL_ANN_FILE, COCO_VAL_IMG_DIR)
 
-        MetadataCatalog.get("coco2017_train").set(thing_classes=thing_classes)
-        MetadataCatalog.get("coco2017_val").set(thing_classes=thing_classes)
+            MetadataCatalog.get("coco2017_train").set(thing_classes=coco_thing_classes)
+            MetadataCatalog.get("coco2017_val").set(thing_classes=coco_thing_classes)
+
+        elif "coco_oi" in cfg.DATASETS.TRAIN[0] and "coco_oi" in cfg.DATASETS.TEST[0]:
+            COCO_OI_TRAIN_1_ANN_FILE = f'{root_dir}/datasets/coco_oi/annotations/coco_oi_instances_validation.json'
+            COCO_OI_TRAIN_2_ANN_FILE = f'{root_dir}/datasets/coco_oi/annotations/coco_oi_instances_eval.json'
+            COCO_OI_IMG_DIR = f'{root_dir}/datasets/coco_oi/images'
+            COCO_OI_VAL_ANN_FILE = f'{root_dir}/datasets/coco_oi/annotations/coco_oi_instances_test.json'
+
+            with open(COCO_OI_TRAIN_1_ANN_FILE, "r") as r:
+                coco_oi_thing_classes = [cat['name'] for cat in json.load(r)["categories"]]
+
+            register_coco_instances("coco_oi_train_1", {}, COCO_OI_TRAIN_1_ANN_FILE, COCO_OI_IMG_DIR)
+            register_coco_instances("coco_oi_train_2", {}, COCO_OI_TRAIN_2_ANN_FILE, COCO_OI_IMG_DIR)
+            register_coco_instances("coco_oi_val", {}, COCO_OI_VAL_ANN_FILE, COCO_OI_VAL_IMG_DIR)
+
+            MetadataCatalog.get("coco_oi_train_1").set(thing_classes=coco_oi_thing_classes)
+            MetadataCatalog.get("coco_oi_train_2").set(thing_classes=coco_oi_thing_classes)
+            MetadataCatalog.get("coco_oi_val").set(thing_classes=coco_oi_thing_classes)
 
         logger.info("Datasets registered successfully!")
         logger.info("Available datasets: {}".format(DatasetCatalog.list()))
@@ -287,21 +309,17 @@ def setup(args):
     except Exception as e:
         logger.error(f"Error registering datasets: {e}")
 
-    cfg = get_cfg()
-    cfg.set_new_allowed(True)
-    cfg.merge_from_file(args.config_file)
-    cfg.merge_from_list(args.opts)
+    num_images = len(DatasetCatalog.get(cfg.DATASETS.TRAIN[0]))
+    num_classes = len(MetadataCatalog.get(cfg.DATASETS.TRAIN[0]).thing_classes)
 
-    iters2epoch = math.floor(len(DatasetCatalog.get("coco2017_train")) / (cfg.SOLVER.IMS_PER_BATCH * args.num_gpus))
+    iters2epoch = math.floor(num_images / (cfg.SOLVER.IMS_PER_BATCH * args.num_gpus))
     max_iter = cfg.SOLVER.MAX_ITER * iters2epoch
     warmup_iters = cfg.SOLVER.WARMUP_ITERS * iters2epoch
     steps = cfg.SOLVER.STEPS
 
-    cfg.MODEL.YOLOF.DECODER.NUM_CLASSES = len(thing_classes) if len(thing_classes) > 0 else cfg.MODEL.YOLOF.DECODER.NUM_CLASSES
+    cfg.MODEL.YOLOF.DECODER.NUM_CLASSES = num_classes or cfg.MODEL.YOLOF.DECODER.NUM_CLASSES
     cfg.MODEL.YOLOF.RETURN_VAL_LOSS = True
 
-    cfg.DATASETS.TRAIN = ("coco2017_train",)
-    cfg.DATASETS.TEST = ("coco2017_val",)
     cfg.SOLVER.MAX_ITER = max_iter
     cfg.SOLVER.WARMUP_ITERS = warmup_iters
     # cfg.OUTPUT_DIR = "./output/baseline_yolof_coco2017"
@@ -362,7 +380,7 @@ def main(args):
     for hook in trainer._hooks:
         if isinstance(hook, hooks.PeriodicWriter) and comm.is_main_process():
             hook._writers.insert(-2, WandBWriter(cfg, project="Thesis"))
-
+    trainer.test(cfg, trainer.model)
     return trainer.train()
 
 
