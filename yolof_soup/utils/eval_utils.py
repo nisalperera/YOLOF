@@ -34,7 +34,6 @@ from yolof.data.samplers import EvenlyDistributedInferenceSampler
 from yolof.data.build import build_detection_test_loader
 from yolof.evaluation.coco_ar_ap import COCOEvaluatorWithAPandAR
 from yolof_soup.utils.global_logger import get_logger
-from yolof_soup.utils.inference import EvaluateModel
 
 
 logger = get_logger(logging.DEBUG, add_file_handler=True)
@@ -127,7 +126,7 @@ def compute_coco_map(
 
 
 def get_map(
-    model: torch.nn.Module | EvaluateModel,
+    model: torch.nn.Module,
     cfg,
     dataset_name: str,
     output_dir: str | Path = "/tmp/eval",
