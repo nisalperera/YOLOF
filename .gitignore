@@ -137,6 +137,8 @@ markdown/
 output/
 wandb/
 datasets/coco/
+!datasets/coco/annotations/instances_val2017_calib.json
+!datasets/coco/annotations/instances_val2017_without_heldout.json
 datasets/COCO_OI/
 datasets/coco_oi/
 datasets/damage_annotations_march25/
@@ -147,6 +149,9 @@ datasets/pascal-voc/val_2007+2012.json
 datasets/merged_cocoplus_dataset_1_140.json
 datasets/filter_classes.ipynb
 datasets/split_dataset.ipynb
+datasets/Objects365/val/archives/*.*
+datasets/Objects365/val/images/
+datasets/Objects365/val/zhiyuan_objv2_val.json
 models/
 results/
 

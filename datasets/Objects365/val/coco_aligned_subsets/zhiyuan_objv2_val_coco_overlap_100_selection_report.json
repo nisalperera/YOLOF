@@ -1,0 +1,554 @@
+[
+  {
+    "category_id": 1,
+    "category_name": "Person",
+    "available_images": 33217,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 3,
+    "category_name": "Chair",
+    "available_images": 9216,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 6,
+    "category_name": "Car",
+    "available_images": 3823,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 9,
+    "category_name": "Bottle",
+    "available_images": 11943,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 11,
+    "category_name": "Cup",
+    "available_images": 13038,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 19,
+    "category_name": "Book",
+    "available_images": 3993,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 22,
+    "category_name": "Boat",
+    "available_images": 1529,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 25,
+    "category_name": "Bench",
+    "available_images": 1821,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 26,
+    "category_name": "Potted Plant",
+    "available_images": 2303,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 31,
+    "category_name": "Vase",
+    "available_images": 1857,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 36,
+    "category_name": "Wine Glass",
+    "available_images": 1923,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 39,
+    "category_name": "Backpack",
+    "available_images": 930,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 40,
+    "category_name": "Umbrella",
+    "available_images": 1357,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 41,
+    "category_name": "Traffic Light",
+    "available_images": 1014,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 44,
+    "category_name": "Tie",
+    "available_images": 1096,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 47,
+    "category_name": "Bicycle",
+    "available_images": 1416,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 51,
+    "category_name": "Couch",
+    "available_images": 1642,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 56,
+    "category_name": "Bus",
+    "available_images": 770,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 59,
+    "category_name": "Motorcycle",
+    "available_images": 907,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 62,
+    "category_name": "Cell Phone",
+    "available_images": 2937,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 66,
+    "category_name": "Truck",
+    "available_images": 1536,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 74,
+    "category_name": "Laptop",
+    "available_images": 3076,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 76,
+    "category_name": "Bed",
+    "available_images": 1691,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 79,
+    "category_name": "Horse",
+    "available_images": 718,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 82,
+    "category_name": "Sink",
+    "available_images": 9332,
+    "selected_images_containing_class": 137,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 83,
+    "category_name": "Apple",
+    "available_images": 3640,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 85,
+    "category_name": "Knife",
+    "available_images": 5189,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 89,
+    "category_name": "Fork",
+    "available_images": 4457,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 93,
+    "category_name": "Dog",
+    "available_images": 956,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 94,
+    "category_name": "Spoon",
+    "available_images": 3844,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 95,
+    "category_name": "Clock",
+    "available_images": 1341,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 97,
+    "category_name": "Cow",
+    "available_images": 272,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 98,
+    "category_name": "Cake",
+    "available_images": 962,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 100,
+    "category_name": "Sheep",
+    "available_images": 261,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 107,
+    "category_name": "Keyboard",
+    "available_images": 4121,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 113,
+    "category_name": "Banana",
+    "available_images": 2985,
+    "selected_images_containing_class": 105,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 114,
+    "category_name": "Baseball Glove",
+    "available_images": 70,
+    "selected_images_containing_class": 70,
+    "target_images": 100,
+    "target_reached": false
+  },
+  {
+    "category_id": 115,
+    "category_name": "Airplane",
+    "available_images": 1295,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 116,
+    "category_name": "Mouse",
+    "available_images": 4142,
+    "selected_images_containing_class": 116,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 117,
+    "category_name": "Train",
+    "available_images": 590,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 128,
+    "category_name": "Stop Sign",
+    "available_images": 457,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 133,
+    "category_name": "Remote",
+    "available_images": 1451,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 134,
+    "category_name": "Refrigerator",
+    "available_images": 2401,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 135,
+    "category_name": "Oven",
+    "available_images": 3518,
+    "selected_images_containing_class": 110,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 138,
+    "category_name": "Baseball Bat",
+    "available_images": 123,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 140,
+    "category_name": "Cat",
+    "available_images": 920,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 142,
+    "category_name": "Broccoli",
+    "available_images": 2493,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 144,
+    "category_name": "Pizza",
+    "available_images": 773,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 145,
+    "category_name": "Elephant",
+    "available_images": 555,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 146,
+    "category_name": "Skateboard",
+    "available_images": 92,
+    "selected_images_containing_class": 92,
+    "target_images": 100,
+    "target_reached": false
+  },
+  {
+    "category_id": 147,
+    "category_name": "Surfboard",
+    "available_images": 259,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 151,
+    "category_name": "Donut",
+    "available_images": 534,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 153,
+    "category_name": "Carrot",
+    "available_images": 2829,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 154,
+    "category_name": "Toilet",
+    "available_images": 3097,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 155,
+    "category_name": "Kite",
+    "available_images": 190,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 164,
+    "category_name": "Microwave",
+    "available_images": 2291,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 170,
+    "category_name": "Scissors",
+    "available_images": 1327,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 174,
+    "category_name": "Snowboard",
+    "available_images": 80,
+    "selected_images_containing_class": 80,
+    "target_images": 100,
+    "target_reached": false
+  },
+  {
+    "category_id": 177,
+    "category_name": "Fire Hydrant",
+    "available_images": 234,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 179,
+    "category_name": "Zebra",
+    "available_images": 476,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 181,
+    "category_name": "Giraffe",
+    "available_images": 350,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 205,
+    "category_name": "Tennis Racket",
+    "available_images": 159,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 220,
+    "category_name": "Frisbee",
+    "available_images": 146,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 227,
+    "category_name": "Toothbrush",
+    "available_images": 1623,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 235,
+    "category_name": "Hot dog",
+    "available_images": 439,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 250,
+    "category_name": "Parking meter",
+    "available_images": 313,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 266,
+    "category_name": "Sandwich",
+    "available_images": 569,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 278,
+    "category_name": "Toaster",
+    "available_images": 824,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  },
+  {
+    "category_id": 296,
+    "category_name": "Bear",
+    "available_images": 111,
+    "selected_images_containing_class": 100,
+    "target_images": 100,
+    "target_reached": true
+  }
+]
