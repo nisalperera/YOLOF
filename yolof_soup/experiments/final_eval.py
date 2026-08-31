@@ -192,8 +192,11 @@ def final_eval(merged: bool = True, ingredient: bool = True, decoder_finetune: b
     if merged:
         evaluate_merged_conditions(checkpoint_dir, cfg, N_COLS, dataset, batch_size)
 
-    if ingredient or decoder_finetune:
-        evaluate_ingredients(cfg, N_COLS, dataset, batch_size, "ingredient" if ingredient else "decoder_finetune")
+    if ingredient:
+        evaluate_ingredients(cfg, N_COLS, dataset, batch_size, "ingredient")
+
+    if decoder_finetune:
+        evaluate_ingredients(cfg, N_COLS, dataset, batch_size, "decoder_finetune")
         
 
 if __name__ == "__main__":

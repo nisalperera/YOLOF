@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 class ExperimentRunSpec:
     """Metadata for one named experiment run."""
 
-    run_id: str
+    id: str
     role: str
     run_type: str
     run_name: str
@@ -26,6 +26,7 @@ class ExperimentRunSpec:
     expected_gpu: str
     source_checkpoint_kind: str
     checkpoint_path: Path
+    eval_json_path: Path
     ingredient_index: Optional[int] = None
 
 
@@ -33,14 +34,16 @@ class ExperimentRunSpec:
 class MergeConditionSpec:
     """Metadata for one merge condition."""
 
-    condition_id: str
+    id: str
     name: str
     description: str
+    eval_json_path: Path
+    checkpoint_path: Optional[Path] = None
 
 
 RUN_SPECS: Tuple[ExperimentRunSpec, ...] = (
     ExperimentRunSpec(
-        run_id="L1",
+        id="L1",
         role="ingredient",
         run_type="full_finetune",
         run_name="L1",
@@ -48,10 +51,11 @@ RUN_SPECS: Tuple[ExperimentRunSpec, ...] = (
         expected_gpu="RTX 5070 Ti",
         source_checkpoint_kind="pretrained_base",
         ingredient_index=0,
-        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/ingridients-refined/L1/model_best.pth")
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/ingridients-refined/L1/model_best.pth"),
+        eval_json_path=Path("/home/nisalperera/YOLOF/results/inference/final_eval/L1/coco_instances_results.json")
     ),
     ExperimentRunSpec(
-        run_id="L2",
+        id="L2",
         role="ingredient",
         run_type="full_finetune",
         run_name="L2",
@@ -59,10 +63,11 @@ RUN_SPECS: Tuple[ExperimentRunSpec, ...] = (
         expected_gpu="RTX 5070 Ti",
         source_checkpoint_kind="pretrained_base",
         ingredient_index=1,
-        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/ingridients-refined/L2/model_best.pth")
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/ingridients-refined/L2/model_best.pth"),
+        eval_json_path=Path("/home/nisalperera/YOLOF/results/inference/final_eval/L2/coco_instances_results.json")
     ),
     ExperimentRunSpec(
-        run_id="L3",
+        id="L3",
         role="ingredient",
         run_type="full_finetune",
         run_name="L3",
@@ -70,10 +75,11 @@ RUN_SPECS: Tuple[ExperimentRunSpec, ...] = (
         expected_gpu="RTX 5070 Ti",
         source_checkpoint_kind="pretrained_base",
         ingredient_index=2,
-        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/ingridients-refined/L3/model_best.pth")
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/ingridients-refined/L3/model_best.pth"),
+        eval_json_path=Path("/home/nisalperera/YOLOF/results/inference/final_eval/L3/coco_instances_results.json")
     ),
     ExperimentRunSpec(
-        run_id="L4",
+        id="L4",
         role="ingredient",
         run_type="full_finetune",
         run_name="L4",
@@ -81,10 +87,11 @@ RUN_SPECS: Tuple[ExperimentRunSpec, ...] = (
         expected_gpu="RTX 5070 Ti",
         source_checkpoint_kind="pretrained_base",
         ingredient_index=3,
-        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/ingridients-refined/L4/model_best.pth")
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/ingridients-refined/L4/model_best.pth"),
+        eval_json_path=Path("/home/nisalperera/YOLOF/results/inference/final_eval/L4/coco_instances_results.json")
     ),
     ExperimentRunSpec(
-        run_id="R1",
+        id="R1",
         role="ingredient",
         run_type="full_finetune",
         run_name="R1",
@@ -92,10 +99,11 @@ RUN_SPECS: Tuple[ExperimentRunSpec, ...] = (
         expected_gpu="RTX 5090",
         source_checkpoint_kind="pretrained_base",
         ingredient_index=4,
-        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/ingridients-refined/R1/model_best.pth")
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/ingridients-refined/R1/model_best.pth"),
+        eval_json_path=Path("/home/nisalperera/YOLOF/results/inference/final_eval/R1/coco_instances_results.json")
     ),
     ExperimentRunSpec(
-        run_id="R2",
+        id="R2",
         role="ingredient",
         run_type="full_finetune",
         run_name="R2",
@@ -103,62 +111,89 @@ RUN_SPECS: Tuple[ExperimentRunSpec, ...] = (
         expected_gpu="RTX 5090",
         source_checkpoint_kind="pretrained_base",
         ingredient_index=5,
-        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/ingridients-refined/R2/model_best.pth")
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/ingridients-refined/R2/model_best.pth"),
+        eval_json_path=Path("/home/nisalperera/YOLOF/results/inference/final_eval/R2/coco_instances_results.json")
     ),
     ExperimentRunSpec(
-        run_id="D1",
+        id="D1",
         role="decoder_finetune",
         run_type="decoder_finetune",
         run_name="D1",
         changed_hyperparameter="merge_source_M2",
         expected_gpu="RTX 5070 Ti",
         source_checkpoint_kind="merged_soup",
-        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/decoder-finetune/D1/model_best.pth")
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/decoder-finetune/D1/model_best.pth"),
+        eval_json_path=Path("/home/nisalperera/YOLOF/results/inference/final_eval/D1/coco_instances_results.json")
     ),
     ExperimentRunSpec(
-        run_id="D2",
+        id="D2",
         role="decoder_finetune",
         run_type="decoder_finetune",
         run_name="D2",
         changed_hyperparameter="merge_source_best_of_M3_M4",
         expected_gpu="RTX 5070 Ti",
         source_checkpoint_kind="merged_soup",
-        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/decoder-finetune/D2/model_best.pth")
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/decoder-finetune/D2/model_best.pth"),
+        eval_json_path=Path("/home/nisalperera/YOLOF/results/inference/final_eval/D2/coco_instances_results.json")
     ),
     ExperimentRunSpec(
-        run_id="C3",
+        id="C3",
         role="decoder_finetune",
         run_type="decoder_finetune",
         run_name="C3",
         changed_hyperparameter="final_pipeline_selection",
         expected_gpu="RTX 5070 Ti",
         source_checkpoint_kind="merged_soup",
-        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/decoder-finetune/C3/model_best.pth")
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/decoder-finetune/C3/model_best.pth"),
+        eval_json_path=Path("/home/nisalperera/YOLOF/results/inference/final_eval/C3/coco_instances_results.json")
     ),
 )
 
 
 MERGE_CONDITIONS: Tuple[MergeConditionSpec, ...] = (
     MergeConditionSpec(
-        condition_id="M1",
+        id="M1",
         name="global_uniform",
         description="Global uniform soup over full model.",
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/global_uniform_soup.pth"),
+        eval_json_path=Path("/home/nisalperera/YOLOF/results/inference/final_eval/M1/coco_instances_results.json")
     ),
     MergeConditionSpec(
-        condition_id="M2",
+        id="M2",
         name="branch_uniform",
         description="Branch-partitioned uniform soup with separate cls/reg groups.",
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/branch_uniform_soup.pth"),
+        eval_json_path=Path("/home/nisalperera/YOLOF/results/inference/final_eval/M2/coco_instances_results.json")
     ),
     MergeConditionSpec(
-        condition_id="M3",
+        id="M3",
         name="branch_dirichlet",
         description="Independent Dirichlet simplex search for cls/reg branch weights.",
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/dirichlet_soup.pth"),
+        eval_json_path=Path("/home/nisalperera/YOLOF/results/inference/final_eval/M3/coco_instances_results.json")
     ),
     MergeConditionSpec(
-        condition_id="M4",
+        id="M4",
         name="branch_fisher",
         description="Fisher-weighted branch soup using Hessian-based weights.",
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/fisher_soup.pth"),
+        eval_json_path=Path("/home/nisalperera/YOLOF/results/inference/final_eval/M4/coco_instances_results.json")
     ),
+    MergeConditionSpec(
+        id="M5",
+        name="uniform_learned",
+        description="Jointly optimises mixing coefficients α ∈ ℝᵏ and temperature β ∈ ℝ",
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/uniform_learned_soup.pth"),
+        eval_json_path=Path("/home/nisalperera/YOLOF/results/inference/final_eval/M5/coco_instances_results.json")
+    ),
+    MergeConditionSpec(
+        id="M6",
+        name="learned_tri_head",
+        description="Maintains three independent (α, β) pairs for the three decoder prediction " \
+            "sub-heads, while backbone and encoder are fixed under uniform averaging",
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/learned_tri_head_soup.pth"),
+        eval_json_path=Path("/home/nisalperera/YOLOF/results/inference/final_eval/M6/coco_instances_results.json")
+    )
 )
 
 
@@ -180,18 +215,18 @@ def ingredient_runs() -> List[ExperimentRunSpec]:
 
 
 def ingredient_run_ids() -> List[str]:
-    return [run.run_id for run in ingredient_runs()]
+    return [run.id for run in ingredient_runs()]
 
 
 def validate_registry_specs(specs: Sequence[ExperimentRunSpec] = RUN_SPECS) -> List[str]:
     """Return a list of validation errors. Empty list means valid."""
     errors: List[str] = []
 
-    run_ids = [run.run_id for run in specs]
+    run_ids = [run.id for run in specs]
     if len(set(run_ids)) != len(run_ids):
         errors.append("Run IDs must be unique.")
 
-    condition_ids = [cond.condition_id for cond in MERGE_CONDITIONS]
+    condition_ids = [cond.id for cond in MERGE_CONDITIONS]
     if len(set(condition_ids)) != len(condition_ids):
         errors.append("Merge condition IDs must be unique.")
 
@@ -245,7 +280,7 @@ def build_experiment_manifest(
     by_run: Dict[str, Dict[str, object]] = {}
 
     for i, run in enumerate(ingredient_runs()):
-        by_run[run.run_id] = {
+        by_run[run.id] = {
             **asdict(run),
             "decoder_checkpoint": resolved_decoder[i],
             "global_checkpoint": resolved_global[i],
@@ -255,9 +290,9 @@ def build_experiment_manifest(
     for run in RUN_SPECS:
         if run.role == "ingredient":
             continue
-        by_run[run.run_id] = {
+        by_run[run.id] = {
             **asdict(run),
-            "source_checkpoint": str(checkpoint_root / f"{run.run_id.lower()}_source.pth"),
+            "source_checkpoint": str(checkpoint_root / f"{run.id.lower()}_source.pth"),
         }
 
     return {

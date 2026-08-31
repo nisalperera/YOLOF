@@ -127,6 +127,8 @@ def compute_coco_map(
     loader    = build_eval_dataloader(cfg, dataset_name, batch_size=batch_size)
     evaluator = COCOEvaluatorWithAPandAR(dataset_name, output_dir=str(eval_dir))
 
+    logger.info("Evaluating model on dataset '%s' on '%i' images with batch_size=%d, output_dir=%s", dataset_name, len(loader.dataset), batch_size, eval_dir)
+
     model.eval()
     results = inference_on_dataset(model, loader, evaluator)
     bbox = results.get("bbox", {})

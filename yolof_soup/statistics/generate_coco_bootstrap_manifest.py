@@ -45,6 +45,9 @@ from typing import Any
 
 import numpy as np
 
+from yolof_soup.config.experiment_registry import get_merge_conditions, get_run_specs 
+from yolof_soup.config.experiment_config import COCO_VAL_ANN, RESULTS_DIR
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -58,31 +61,10 @@ def parse_args() -> argparse.Namespace:
         "--ground-truth",
         type=Path,
         required=True,
+        default=COCO_VAL_ANN,
         help=(
             "COCO-format ground-truth annotation JSON for the final "
             "held-out COCO validation subset."
-        ),
-    )
-
-    parser.add_argument(
-        "--predictions",
-        type=Path,
-        nargs="+",
-        required=True,
-        help=(
-            "One or more standard COCO detection-result JSON files. "
-            "These are validated for image-ID compatibility but are not "
-            "modified by this script."
-        ),
-    )
-
-    parser.add_argument(
-        "--prediction-names",
-        nargs="+",
-        default=None,
-        help=(
-            "Optional model names in the same order as --predictions, "
-            "for example: M6 M1 BestIngredient M5 C3."
         ),
     )
 
@@ -103,13 +85,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("bootstrap_manifest"),
+        default=Path(RESULTS_DIR) / "bootstrap_manifest",
         help="Directory for generated bootstrap files.",
     )
 
     parser.add_argument(
         "--write-first-replicate",
         action="store_true",
+        default=True,
         help=(
             "Write first_replicate_image_ids.txt for quick manual "
             "inspection. This is useful for debugging only."
@@ -300,20 +283,24 @@ def main() -> None:
             f"Ground-truth file not found: {args.ground_truth}"
         )
 
-    for prediction_path in args.predictions:
-        if not prediction_path.is_file():
+    runs = get_run_specs()
+    merge_conditions = get_merge_conditions()
+    prediction_names = []
+    for exp in runs:
+        if not exp.eval_json_path is None and not exp.eval_json_path.is_file():
             raise FileNotFoundError(
-                f"Prediction file not found: {prediction_path}"
+                f"Prediction file not found: {exp.eval_json_path}"
             )
 
-    if (
-        args.prediction_names is not None
-        and len(args.prediction_names) != len(args.predictions)
-    ):
-        raise ValueError(
-            "--prediction-names must contain exactly one name for each "
-            "--predictions file."
-        )
+        prediction_names.append(exp.id)
+
+    for exp in merge_conditions:
+        if not exp.eval_json_path is None and not exp.eval_json_path.is_file():
+            raise FileNotFoundError(
+                f"Prediction file not found: {exp.eval_json_path}"
+            )
+
+        prediction_names.append(exp.id)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -330,12 +317,9 @@ def main() -> None:
 
     prediction_metadata = {}
 
-    for index, prediction_path in enumerate(args.predictions):
-        model_name = (
-            args.prediction_names[index]
-            if args.prediction_names is not None
-            else prediction_path.stem
-        )
+    for index, experiment in enumerate(runs + merge_conditions):
+        model_name = experiment.id
+        prediction_path = experiment.eval_json_path
 
         prediction_info = validate_prediction_file(
             prediction_path=prediction_path,

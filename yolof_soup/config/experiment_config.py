@@ -104,7 +104,7 @@ COCO_VAL_IMG_DIR:   str = os.path.join(COCO_ROOT, "images/val2017")
 
 #: COCO annotation files.
 COCO_TRAIN_ANN: str = os.path.join(COCO_ROOT, "annotations", "instances_train2017.json")
-COCO_VAL_ANN: str = os.path.join(COCO_ROOT, "annotations", "instances_val2017.json")
+COCO_VAL_ANN: str = os.path.join(COCO_ROOT, "annotations", "instances_val2017_without_calib.json")
 COCO_CALIB_ANN: str = os.path.join(COCO_ROOT, "annotations", "instances_val2017_heldout_calib.json")
 
 # Objects365 dataset paths (for cross-domain evaluation)
