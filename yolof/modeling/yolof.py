@@ -258,7 +258,7 @@ class YOLOF(nn.Module):
                    f"Bottom: {max_boxes} Highest Scoring Results"
         storage.put_image(vis_name, vis_img)
 
-    def forward(self, batched_inputs: Tuple[Dict[str, Tensor]], return_val_loss: bool=False, beta=1.0):
+    def forward(self, batched_inputs: Tuple[Dict[str, Tensor]], return_val_loss: bool=False):
         """
         Args:
             batched_inputs: a list, batched outputs of :class:`DatasetMapper` .
@@ -278,11 +278,6 @@ class YOLOF(nn.Module):
             in inference, the standard output format, described in
             :doc:`/tutorials/models`.
         """
-
-        if not isinstance(beta, Tensor):
-            beta = torch.tensor([beta], device=self.device)
-        else:
-            beta = beta.to(self.device)
 
         num_images = len(batched_inputs)
         images = self.preprocess_image(batched_inputs)

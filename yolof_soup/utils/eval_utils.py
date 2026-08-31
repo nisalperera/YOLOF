@@ -21,6 +21,9 @@ from __future__ import annotations
 from collections import defaultdict
 import logging
 import random
+import math
+import numpy as np
+
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -98,11 +101,16 @@ def build_train_dataloader(cfg, dataset_name: Optional[str] = None, batch_size=8
     return build_detection_train_loader(cfg, mapper=mapper)
 
 
+def save_eval_data(inputs=None, outputs=None):
+    pass
+
+
 def compute_coco_map(
     model,
     cfg,
     dataset_name: str,
     output_dir: str | Path,
+    batch_size: int = 1,
     tag: str = "eval",
 ) -> Dict[str, float]:
     """
@@ -116,7 +124,7 @@ def compute_coco_map(
     eval_dir = Path(output_dir) / "inference" / tag
     eval_dir.mkdir(parents=True, exist_ok=True)
 
-    loader    = build_eval_dataloader(cfg, dataset_name)
+    loader    = build_eval_dataloader(cfg, dataset_name, batch_size=batch_size)
     evaluator = COCOEvaluatorWithAPandAR(dataset_name, output_dir=str(eval_dir))
 
     model.eval()
@@ -184,39 +192,18 @@ def extract_per_class_ap(
     per_class_ap = []
     try:
         for class_idx in range(len(categories)):
+
+            class_name = categories[class_idx] if class_idx < len(categories) else f"class_{class_idx}"
+
             # Try to find AP-{class_idx} key
             ap_key = f"AP-{class_idx}"
-            ap_val = results_dict.get(ap_key, 0.0)
+            ap_val = max(results_dict.get(ap_key, 0.0), results_dict.get(f"AP-{class_name}", 0.0))
 
             ar_key = f"AR-{class_idx}"
-            ar_val = results_dict.get(ar_key, 0.0)
-                
-            # If no AP-{class_idx} keys found, try AP-{class_name} keys
-            if ap_val == 0.0:
-                # Build list from class names if available
-                # Try to get COCO class names
-                # This assumes the dataset is registered with Detectron2
-                # For COCO, class names are stored in MetadataCatalog
-                class_name = categories[class_idx] if class_idx < len(categories) else f"class_{class_idx}"
-                logger.debug(f"No AP-{class_idx} key found in results; trying AP-{class_name} key")
-                ap_key = f"AP-{class_name}"
-                ap_val = results_dict.get(ap_key, 0.0)
-                
-                # if len(per_class_ap) > class_idx:
-                    # per_class_ap[class_idx].append(float(ar_val))
-                # else:
-                per_class_ap.append([class_name, float(ap_val)])
+            ar_val = max(results_dict.get(ar_key, 0.0), results_dict.get(f"AR-{class_name}", 0.0))
 
-            if ar_val == 0.0:
-                class_name = categories[class_idx] if class_idx < len(categories) else f"class_{class_idx}"
-                logger.debug(f"No AP-{class_idx} key found in results; trying AP-{class_name} key")
-                ar_key = f"AR-{class_name}"
-                ar_val = results_dict.get(ar_key, 0.0)
-
-                per_class_ap[class_idx].append(float(ar_val))
-
-            else:
-                per_class_ap.append([class_idx, float(ap_val), float(ar_val)])
+            if not (ap_val == math.isnan(ap_val)):
+                per_class_ap.append([class_name, float(ap_val), float(ar_val)])
         
         return per_class_ap
     except Exception as e:

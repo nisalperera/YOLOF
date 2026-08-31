@@ -137,8 +137,8 @@ markdown/
 output/
 wandb/
 datasets/coco/
-!datasets/coco/annotations/instances_val2017_calib.json
-!datasets/coco/annotations/instances_val2017_without_heldout.json
+!datasets/coco/annotations/instances_val2017_heldout_calib.json
+!datasets/coco/annotations/instances_val2017_without_calib.json
 datasets/COCO_OI/
 datasets/coco_oi/
 datasets/damage_annotations_march25/

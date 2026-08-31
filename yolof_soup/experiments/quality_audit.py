@@ -27,7 +27,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from yolof_soup.config.experiment_config import RESULTS_DIR, EVAL_DATASET, build_eval_cfg
+from yolof_soup.config.experiment_config import RESULTS_DIR, COCO_EVAL_DATASET, build_eval_cfg
 from yolof_soup.config.experiment_registry import get_run_specs
 from yolof_soup.utils.eval_utils import compute_coco_map, extract_per_class_ap
 from yolof_soup.utils.inference import EvaluateModel
@@ -44,7 +44,7 @@ def audit_single_ingredient(
     run_id: str,
     checkpoint_path: str,
     cfg,
-    eval_dataset: str = EVAL_DATASET,
+    eval_dataset: str = COCO_EVAL_DATASET,
     output_dir: str | Path = RESULTS_DIR,
 ) -> Dict[str, Any]:
     """
@@ -123,7 +123,7 @@ def run_full_audit(
     ingredient_checkpoint_paths: List[str],
     run_ids: Optional[List[str]] = None,
     cfgs: Optional[List] = None,
-    eval_dataset: str = EVAL_DATASET,
+    eval_dataset: str = COCO_EVAL_DATASET,
     output_dir: str | Path = RESULTS_DIR,
     outlier_threshold_pp: float = 3.0,  # percentage points below max
 ) -> Dict[str, Any]:
@@ -143,7 +143,7 @@ def run_full_audit(
         "pool_max_map", "passed_count", "flagged_count", etc.
     """
     if cfgs is None:
-        cfgs = [build_eval_cfg(EVAL_DATASET)] * len(ingredient_checkpoint_paths)
+        cfgs = [build_eval_cfg(COCO_EVAL_DATASET)] * len(ingredient_checkpoint_paths)
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -253,7 +253,7 @@ def main():
         logger.debug("Verbose logging enabled")
 
     # Build config
-    # cfg = build_eval_cfg(EVAL_DATASET)
+    # cfg = build_eval_cfg(COCO_EVAL_DATASET)
 
     # Construct paths for all 6 ingredients (L1-L4, C1-C2)
     # Adjust this based on your actual checkpoint naming/locations
@@ -267,7 +267,7 @@ def main():
         ckpt_path = Path(args.phase2_output_dir) / f"{run_spec.run_name}/model_best.pth"
         ckpt_paths.append(str(ckpt_path))
         run_ids.append(run_spec.run_id)
-        cfg = build_eval_cfg(EVAL_DATASET, cfg_file=Path(args.phase2_output_dir) / f"{run_spec.run_name}/config.yaml", weights_path=ckpt_path)
+        cfg = build_eval_cfg(COCO_EVAL_DATASET, cfg_file=Path(args.phase2_output_dir) / f"{run_spec.run_name}/config.yaml", weights_path=ckpt_path)
         cfgs.append(cfg)
         logger.info("Will audit: %s → %s", run_spec.run_id, ckpt_path)
 
@@ -276,7 +276,7 @@ def main():
         ckpt_paths,
         run_ids=run_ids,
         cfgs=cfgs,
-        eval_dataset=EVAL_DATASET,
+        eval_dataset=COCO_EVAL_DATASET,
         output_dir=args.results_dir,
         outlier_threshold_pp=args.outlier_threshold,
     )

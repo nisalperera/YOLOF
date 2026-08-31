@@ -24,7 +24,7 @@ from yolof.utils import _format_duration
 from yolof_soup.config.experiment_config import (
     CHECKPOINT_DIR,
     RESULTS_DIR,
-    CALIB_DATASET,
+    COCO_CALIB_DATASET,
     PHASE2_OUTPUT_DIR,
     _register_datasets,
     build_eval_cfg,
@@ -186,10 +186,10 @@ def run(verbose: bool = True, seed: int = 42) -> bool:
 
         # ── Build dataloaders ─────────────────────────────────────────────────
         logger.info("\n[3/4] Building dataloaders...")
-        # NEW: Use CALIB_DATASET for learned soup optimization (validation-based learning)
-        # This provides better generalization than training on CALIB_DATASET
+        # NEW: Use COCO_CALIB_DATASET for learned soup optimization (validation-based learning)
+        # This provides better generalization than training on COCO_CALIB_DATASET
         calib_dataloader = build_eval_dataloader(
-            cfg, CALIB_DATASET, batch_size=LEARNED_SOUP_BATCH_SIZE
+            cfg, COCO_CALIB_DATASET, batch_size=LEARNED_SOUP_BATCH_SIZE
         )
 
         if hasattr(calib_dataloader.dataset, "sampler"):

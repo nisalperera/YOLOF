@@ -42,7 +42,7 @@ import torch
 from yolof_soup.config.experiment_config import (
     CHECKPOINT_DIR,
     DEVICE,
-    EVAL_DATASET,
+    COCO_EVAL_DATASET,
     RESULTS_DIR,
     build_eval_cfg,
 )
@@ -253,7 +253,7 @@ def train_d1(
     logging.info("  Evaluating D1...")
     try:
         results_dict = compute_coco_map(
-            build_model_from_config(cfg), cfg, EVAL_DATASET,
+            build_model_from_config(cfg), cfg, COCO_EVAL_DATASET,
             output_dir=Path(results_dir) / "phase5_eval", tag="d1"
         )
         d1_map = float(results_dict.get("AP", 0.0))
@@ -312,7 +312,7 @@ def train_d2(
     logging.info("  Evaluating D2...")
     try:
         results_dict = compute_coco_map(
-            build_model_from_config(cfg), cfg, EVAL_DATASET,
+            build_model_from_config(cfg), cfg, COCO_EVAL_DATASET,
             output_dir=Path(results_dir) / "phase5_eval", tag="d2"
         )
         d2_map = float(results_dict.get("AP", 0.0))
@@ -376,7 +376,7 @@ def train_c3(
     logging.info("  Evaluating C3...")
     try:
         results_dict = compute_coco_map(
-            build_model_from_config(cfg), cfg, EVAL_DATASET,
+            build_model_from_config(cfg), cfg, COCO_EVAL_DATASET,
             output_dir=Path(results_dir) / "phase5_eval", tag="c3"
         )
         c3_map = float(results_dict.get("AP", 0.0))
@@ -434,7 +434,7 @@ def run(verbose: bool = True) -> Dict[str, Any]:
     
     # Build evaluation dataloader
     logging.info("\n[Setup] Building evaluation dataloader...")
-    eval_dataloader = build_eval_dataloader(cfg, EVAL_DATASET)
+    eval_dataloader = build_eval_dataloader(cfg, COCO_EVAL_DATASET)
     logging.info("  ✓ Dataloader ready")
     
     # Train D1

@@ -26,17 +26,20 @@ Each entry must contain a list "per_class_ap" of length 80 (COCO category order)
 import json
 import pathlib
 import numpy as np
+
+from datetime import datetime
 from scipy import stats
 
 RESULTS_DIR = pathlib.Path("results")
-SOUP_FILE = RESULTS_DIR / "phase3_soup_results.json"
-INGREDIENT_FILE = RESULTS_DIR / "phase1_ingredient_results.json"
+SOUP_FILE = RESULTS_DIR / "phase3_soup_final_eval_results_2026-08-30_22-26-46.json"
+INGREDIENT_FILE = RESULTS_DIR / "phase1_ingredient_results_2026-08-30_23-44-21.json"
 N_BOOT = 10_000
 RNG_SEED = 42
 PRACTICAL_THRESHOLD = 0.5
+NUM_CLASSES = 70
 
 
-def extract_ap_array(per_class_ap, expected_len=80, field_name="per_class_ap"):
+def extract_ap_array(per_class_ap, expected_len=NUM_CLASSES, field_name="per_class_ap"):
     """
     per_class_ap is a list of [class_name, AP, AR] triples.
     Returns a flat float array of the 80 AP values (index 1), in file order.
@@ -89,7 +92,7 @@ def cohens_d_paired(diff):
 
 
 def run_comparison(name, ap_a, ap_b):
-    assert len(ap_a) == 80 and len(ap_b) == 80
+    assert len(ap_a) == NUM_CLASSES and len(ap_b) == NUM_CLASSES, f"AP arrays must be of length {NUM_CLASSES} (COCO categories)"
     diff = ap_b - ap_a
 
     t, p = stats.ttest_rel(ap_b, ap_a)
@@ -166,7 +169,7 @@ def main():
         best_ingredient, best_learned,
     ))
 
-    out = RESULTS_DIR / "h1_rq1_results.json"
+    out = RESULTS_DIR / f"h1_rq1_results_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:
         json.dump(results, f, indent=2, default=float)

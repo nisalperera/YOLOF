@@ -47,7 +47,7 @@ from detectron2.config import CfgNode
 from yolof_soup.config.experiment_config import (
     PHASE2_OUTPUT_DIR,
     DEVICE,
-    CALIB_DATASET,
+    COCO_CALIB_DATASET,
     RESULTS_DIR,
     build_eval_cfg,
     _register_datasets,
@@ -140,7 +140,7 @@ def compute_lmc_barrier(
     cfg,
     common_states: Optional[List[Dict[str, torch.Tensor]]] = None,
     n_steps: int = LMC_ALPHA_STEPS,
-    dataset_name: Optional[str] = CALIB_DATASET,
+    dataset_name: Optional[str] = COCO_CALIB_DATASET,
     eval_tag_prefix: str = "phase4_lmc",
 ) -> Tuple[float, List[float]]:
     """
@@ -265,7 +265,7 @@ def _compute_pairwise_lmc_barrier_worker(
         be_j,
         cfg,
         [anchor_cls, anchor_reg, anchor_shared],
-        dataset_name=CALIB_DATASET,
+        dataset_name=COCO_CALIB_DATASET,
         eval_tag_prefix=f"{pair_name}_backbone",
     )
 
@@ -277,7 +277,7 @@ def _compute_pairwise_lmc_barrier_worker(
         cls_j,
         cfg,
         [anchor_be, anchor_reg, anchor_shared],
-        dataset_name=CALIB_DATASET,
+        dataset_name=COCO_CALIB_DATASET,
         eval_tag_prefix=f"{pair_name}_cls",
     )
 
@@ -289,7 +289,7 @@ def _compute_pairwise_lmc_barrier_worker(
         reg_j,
         cfg,
         [anchor_be, anchor_cls, anchor_shared],
-        dataset_name=CALIB_DATASET,
+        dataset_name=COCO_CALIB_DATASET,
         eval_tag_prefix=f"{pair_name}_reg",
     )
 
@@ -301,7 +301,7 @@ def _compute_pairwise_lmc_barrier_worker(
         shared_j,
         cfg,
         [anchor_be, anchor_cls, anchor_reg],
-        dataset_name=CALIB_DATASET,
+        dataset_name=COCO_CALIB_DATASET,
         eval_tag_prefix=f"{pair_name}_shared",
     )
 
@@ -310,7 +310,7 @@ def _compute_pairwise_lmc_barrier_worker(
         state_i,
         state_j,
         cfg,
-        dataset_name=CALIB_DATASET,
+        dataset_name=COCO_CALIB_DATASET,
         eval_tag_prefix=f"{pair_name}_full",
     )
 
@@ -1221,13 +1221,13 @@ def run(verbose: bool = True, force_recompute: list = []) -> Dict[str, Any]:
         
         # Build Detectron2 config
         logger.info("\n[2/4] Building Detectron2 config...")
-        cfgs = [build_eval_cfg(CALIB_DATASET, str(cfg_path), ckpt_file) for cfg_path, ckpt_file in zip(cfg_paths, ingredient_paths)]
-        base_cfg = build_eval_cfg(CALIB_DATASET)
+        cfgs = [build_eval_cfg(COCO_CALIB_DATASET, str(cfg_path), ckpt_file) for cfg_path, ckpt_file in zip(cfg_paths, ingredient_paths)]
+        base_cfg = build_eval_cfg(COCO_CALIB_DATASET)
         logger.info("  ✓ Config ready")
         
         # Build evaluation dataloader
         logger.info("\n[3/4] Building evaluation dataloader...")
-        dataloader = build_eval_dataloader(cfgs[0], CALIB_DATASET, num_workers=0, batch_size=4, max_img_per_cls=3)
+        dataloader = build_eval_dataloader(cfgs[0], COCO_CALIB_DATASET, num_workers=0, batch_size=4, max_img_per_cls=3)
         logger.info("  ✓ Dataloader ready")
         
         # Compute pairwise LMC barriers
@@ -1240,7 +1240,7 @@ def run(verbose: bool = True, force_recompute: list = []) -> Dict[str, Any]:
         else:
             lmc_barriers = compute_pairwise_lmc_barriers(ingredient_states, base_cfg, verbose=verbose)
         
-        dataloader = build_eval_dataloader(cfgs[0], CALIB_DATASET)
+        dataloader = build_eval_dataloader(cfgs[0], COCO_CALIB_DATASET)
         # Compute Hessian traces
         logger.info("\n[4/4b] Computing Hessian traces for 6 ingredients...")
         traces_json = results_dir / f"phase4_hessian_traces_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.json"

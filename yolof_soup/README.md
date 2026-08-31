@@ -269,9 +269,9 @@ Validates entire pipeline and generates diagnostic report.
 ### Build an evaluation config
 
 ```python
-from yolof_soup.config.experiment_config import build_eval_cfg, EVAL_DATASET
+from yolof_soup.config.experiment_config import build_eval_cfg, COCO_EVAL_DATASET
 
-cfg = build_eval_cfg(EVAL_DATASET)
+cfg = build_eval_cfg(COCO_EVAL_DATASET)
 ```
 
 ### Inspect registry metadata

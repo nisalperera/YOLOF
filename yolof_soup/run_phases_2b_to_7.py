@@ -56,9 +56,9 @@ def run_phase_2b(
     logger.info("="*80)
 
     from yolof_soup.experiments.quality_audit import run_full_audit, build_eval_cfg
-    from yolof_soup.config.experiment_config import EVAL_DATASET
+    from yolof_soup.config.experiment_config import COCO_EVAL_DATASET
 
-    cfg = build_eval_cfg(EVAL_DATASET)
+    cfg = build_eval_cfg(COCO_EVAL_DATASET)
 
     # Construct ingredient checkpoint paths
     run_ids = ["L1", "L2", "L3", "L4", "C1", "C2"]
@@ -68,7 +68,7 @@ def run_phase_2b(
         ckpt_paths,
         run_ids=run_ids,
         cfg=cfg,
-        eval_dataset=EVAL_DATASET,
+        eval_dataset=COCO_EVAL_DATASET,
         output_dir=results_dir,
         outlier_threshold_pp=outlier_threshold,
     )
@@ -201,7 +201,7 @@ def show_configuration() -> None:
         RESULTS_DIR,
         LOG_DIR,
         PHASE2_OUTPUT_DIR,
-        EVAL_DATASET,
+        COCO_EVAL_DATASET,
         DEVICE,
         NUM_GPUS,
     )
@@ -214,7 +214,7 @@ def show_configuration() -> None:
     logger.info("RESULTS_DIR:       %s", RESULTS_DIR)
     logger.info("LOG_DIR:           %s", LOG_DIR)
     logger.info("PHASE2_OUTPUT_DIR: %s", PHASE2_OUTPUT_DIR)
-    logger.info("EVAL_DATASET:      %s", EVAL_DATASET)
+    logger.info("COCO_EVAL_DATASET:      %s", COCO_EVAL_DATASET)
     logger.info("DEVICE:            %s", DEVICE)
     logger.info("NUM_GPUS:          %d", NUM_GPUS)
     logger.info("="*80)

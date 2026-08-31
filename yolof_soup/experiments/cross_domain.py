@@ -13,7 +13,7 @@ import logging
 from yolof_soup.config.experiment_config import (
     CHECKPOINT_DIR,
     VOC_DATASET,
-    EVAL_DATASET,
+    COCO_EVAL_DATASET,
     RESULTS_DIR,
     DEVICE,
     build_eval_cfg,
@@ -44,18 +44,18 @@ def main():
     head_state   = load_state(f"{CHECKPOINT_DIR}/learned_head_soup.pth")
     global_state = load_state(f"{CHECKPOINT_DIR}/global_uniform_soup.pth")
 
-    cfg_coco = build_eval_cfg(EVAL_DATASET)
+    cfg_coco = build_eval_cfg(COCO_EVAL_DATASET)
     cfg_voc  = build_eval_cfg(VOC_DATASET)
 
     # ── In-domain (COCO held-out eval split) ──────────────
     logging.info("\n--- In-Domain: COCO ---")
     model      = build_model_with_state(head_state, DEVICE)
-    coco_head  = compute_coco_map(model, cfg_coco, EVAL_DATASET,
+    coco_head  = compute_coco_map(model, cfg_coco, COCO_EVAL_DATASET,
                                    RESULTS_DIR, tag="coco_head")
     logging.info("Head mAP50:95 = %.4f", coco_head["AP"])
 
     model       = build_model_with_state(global_state, DEVICE)
-    coco_global = compute_coco_map(model, cfg_coco, EVAL_DATASET,
+    coco_global = compute_coco_map(model, cfg_coco, COCO_EVAL_DATASET,
                                     RESULTS_DIR, tag="coco_global")
     logging.info("Global mAP50:95 = %.4f", coco_global["AP"])
 

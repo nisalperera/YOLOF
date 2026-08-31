@@ -62,8 +62,8 @@ from yolof_soup.config.experiment_config import (
     CHECKPOINT_DIR,
     DEVICE,
     RESULTS_DIR,
-    CALIB_DATASET,
-    EVAL_DATASET,
+    COCO_CALIB_DATASET,
+    COCO_EVAL_DATASET,
     CD_LAMBDA_GRID,
     PHASE2_OUTPUT_DIR,
     _register_datasets,
@@ -216,7 +216,7 @@ def build_branch_uniform(
         soup = merge_subdicts(be_dict, cls_avg, reg_avg, shared_avg)
 
         model = EvaluateModel(cfg, state_dict=soup)
-        map_val = get_map(model, cfg, EVAL_DATASET)
+        map_val = get_map(model, cfg, COCO_EVAL_DATASET)
 
         soup_meta["runs"].append(
             {
@@ -297,7 +297,7 @@ def _get_task_vectors(
 def build_dirichlet_soup(
     ingredient_states: List[Dict[str, torch.Tensor]],
     cfg: 'CfgNode',
-    calib_dataset_name: str=CALIB_DATASET,
+    calib_dataset_name: str=COCO_CALIB_DATASET,
     num_samples: int = 30,  # Number of Dirichlet samples to evaluate per base model
     logger: logging.Logger = logging.getLogger(__name__)
 ) -> tuple[Dict[str, torch.Tensor], Dict]:
@@ -512,7 +512,7 @@ def _evaluate_dirichlet_sample(
 def build_fisher_weighted(
     ingredient_states: List[Dict[str, torch.Tensor]],
     cfg: CfgNode,
-    calib_dataset_name: str=CALIB_DATASET,
+    calib_dataset_name: str=COCO_CALIB_DATASET,
 ) -> tuple[Dict[str, torch.Tensor], Dict]:
     """
     M4 (Condition 4): Fisher-weighted branch coefficients.
@@ -955,7 +955,7 @@ def _evaluate_condition_m5_epoch(epoch, alpha_raw, log_beta_raw, ingredient_stat
     
     # 4. Run standard Detectron2 evaluation
     try:
-        metrics = compute_coco_map(eval_model, cfg, EVAL_DATASET,
+        metrics = compute_coco_map(eval_model, cfg, COCO_EVAL_DATASET,
             output_dir=Path(RESULTS_DIR) / "phase3_condition_m5", tag=f"epoch_{epoch + 1}"
         )
         
@@ -2017,7 +2017,7 @@ def _evaluate_condition_m6_epoch(
     map_val = 0.0
     # 4. Run standard Detectron2 evaluation
     try:
-        metrics = compute_coco_map(model_skeleton, cfg, EVAL_DATASET,
+        metrics = compute_coco_map(model_skeleton, cfg, COCO_EVAL_DATASET,
             output_dir=Path(RESULTS_DIR) / "phase3_condition_m5", tag=f"epoch_{epoch}"
         )
         
@@ -2458,9 +2458,17 @@ def evaluate_condition(
     state_dict: Dict[str, torch.Tensor],
     cfg,
     tag: str,
+    batch_size: int = 1,
+    dataset_name: str = COCO_EVAL_DATASET,
+    logger: logging.Logger = logging.getLogger(__name__.split(".")[-1])
 ) -> Dict[str, Any]:
     """
     Evaluate a condition and extract key metrics including per-class AP.
+
+    @params:
+    state_dict  : 
+    cfg         :
+    tag         : Tag should include phase and a tag seperated by a '/'. eg: /phase3_eval/condition_1
 
     Returns:
         {
@@ -2470,6 +2478,7 @@ def evaluate_condition(
             "per_class_ap": [80-element list],
         }
     """
+
     logger.info("Evaluating condition %s on eval split...", tag)
 
     model = EvaluateModel(cfg, state_dict)
@@ -2478,8 +2487,8 @@ def evaluate_condition(
 
     try:
         results_dict = compute_coco_map(
-            model, cfg, EVAL_DATASET,
-            output_dir=Path(RESULTS_DIR) / "phase3_eval", tag=tag
+            model, cfg, dataset_name, batch_size=batch_size,
+            output_dir=Path(RESULTS_DIR), tag=tag
         )
 
         map_val = float(results_dict.get("AP", 0.0))
@@ -2488,7 +2497,7 @@ def evaluate_condition(
 
         per_class_ap = extract_per_class_ap(
             results_dict,
-            MetadataCatalog.get(EVAL_DATASET).thing_classes
+            MetadataCatalog.get(dataset_name).thing_classes
         )
 
         logger.info(
@@ -2603,12 +2612,12 @@ def run(verbose: bool = True, cal_bn: list = [], force_construction: list = []) 
 
         # ── Build dataloaders ─────────────────────────────────────────────────
         logger.info("\n[3/7] Building dataloaders...")
-        # NEW: Use CALIB_DATASET for learned soup optimization (validation-based learning)
-        # This provides better generalization than training on CALIB_DATASET
+        # NEW: Use COCO_CALIB_DATASET for learned soup optimization (validation-based learning)
+        # This provides better generalization than training on COCO_CALIB_DATASET
         calib_dataloader = build_eval_dataloader(
-            cfg, CALIB_DATASET, batch_size=LEARNED_SOUP_BATCH_SIZE
+            cfg, COCO_CALIB_DATASET, batch_size=LEARNED_SOUP_BATCH_SIZE
         )
-        # train_dataloader = build_train_dataloader(cal_cfg, TRAIN_DATASET)
+        # train_dataloader = build_train_dataloader(cal_cfg, COCO_TRAIN_DATASET)
 
         if hasattr(calib_dataloader.dataset, "sampler"):
             calib_dataset_size = calib_dataloader.dataset.sampler._size
@@ -2706,7 +2715,7 @@ def run(verbose: bool = True, cal_bn: list = [], force_construction: list = []) 
 
             start_eval = time.perf_counter()
             condition_name = f"condition_{i + 1}"
-            map_results[f"results_cond{i+1}"] = evaluate_condition(checkpoints[checkpoint_name], cfg, condition_name)
+            map_results[f"results_cond{i+1}"] = evaluate_condition(checkpoints[checkpoint_name], cfg, f"phase3_eval/{condition_name}")
             #  = results["map50_95"]
 
             logger.info("\nResults summary:")

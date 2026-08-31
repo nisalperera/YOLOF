@@ -273,7 +273,7 @@ def setup(args):
         # if "coco2017" in cfg.DATASETS.TRAIN[0] and "coco2017" in cfg.DATASETS.TEST[0]:
         COCO_TRAIN_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_train2017.json'
         COCO_TRAIN_IMG_DIR = f'{root_dir}/datasets/coco/images/train2017'
-        COCO_VAL_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_val2017_without_heldout.json'
+        COCO_VAL_ANN_FILE = f'{root_dir}/datasets/coco/annotations/instances_val2017_without_calib.json'
         COCO_VAL_IMG_DIR = f'{root_dir}/datasets/coco/images/val2017'
 
         with open(COCO_TRAIN_ANN_FILE, "r") as r:

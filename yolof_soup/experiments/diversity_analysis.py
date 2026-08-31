@@ -19,7 +19,7 @@ from yolof_soup.config.experiment_config import (
     BACKBONE_ENC_CKPT,
     DECODER_CKPT_PATHS,
     GLOBAL_CKPT_PATHS,
-    EVAL_DATASET,
+    COCO_EVAL_DATASET,
     RESULTS_DIR,
     DEVICE,
     build_eval_cfg,
@@ -66,16 +66,16 @@ def uniform_soup_map(
     soup   = {k: anchor[k] for k in keys}
     full   = merge_subdicts(backbone_enc_state, soup)
     model  = build_model_with_state(full, device)
-    cfg    = build_eval_cfg(EVAL_DATASET)
-    return get_map(model, cfg, EVAL_DATASET)
+    cfg    = build_eval_cfg(COCO_EVAL_DATASET)
+    return get_map(model, cfg, COCO_EVAL_DATASET)
 
 
 def global_uniform_soup_map(states: list, device) -> float:
     """Uniform soup over full-model states."""
     anchor = compute_anchor(states)
     model  = build_model_with_state(anchor, device)
-    cfg    = build_eval_cfg(EVAL_DATASET)
-    return get_map(model, cfg, EVAL_DATASET)
+    cfg    = build_eval_cfg(COCO_EVAL_DATASET)
+    return get_map(model, cfg, COCO_EVAL_DATASET)
 
 
 def main():

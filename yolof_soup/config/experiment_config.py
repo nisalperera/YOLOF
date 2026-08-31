@@ -104,12 +104,18 @@ COCO_VAL_IMG_DIR:   str = os.path.join(COCO_ROOT, "images/val2017")
 
 #: COCO annotation files.
 COCO_TRAIN_ANN: str = os.path.join(COCO_ROOT, "annotations", "instances_train2017.json")
-COCO_VAL_ANN:   str = os.path.join(COCO_ROOT, "annotations", "instances_val2017.json")
-COCO_CALIB_ANN: str = os.path.join(COCO_ROOT, "annotations", "instances_val2017_calib.json")
+COCO_VAL_ANN: str = os.path.join(COCO_ROOT, "annotations", "instances_val2017.json")
+COCO_CALIB_ANN: str = os.path.join(COCO_ROOT, "annotations", "instances_val2017_heldout_calib.json")
 
-TRAIN_DATASET:     str = "coco2017_train"
-CALIB_DATASET: str = "coco_calib_validation"
-EVAL_DATASET:      str = "coco2017_validation"
+# Objects365 dataset paths (for cross-domain evaluation)
+OBJECTS365_ROOT: str = os.environ.get("OBJECTS365_ROOT", str(DATA_DIR / "Objects365"))
+OBJECTS365_VAL_IMG_DIR: str = os.path.join(OBJECTS365_ROOT, "val/images")
+OBJECTS365_VAL_ANN: str = os.path.join(OBJECTS365_ROOT, "val/coco_aligned_subsets/zhiyuan_objv2_val_coco_remapped_100_images_per_class.json")
+
+COCO_TRAIN_DATASET: str = "coco2017_train"
+COCO_CALIB_DATASET: str = "coco_calib_validation"
+COCO_EVAL_DATASET: str = "coco2017_validation"
+OBJECTS365_DATASET: str = "objects365_validation"
 
 # ── Register datasets with Detectron2 (idempotent) ───────────────────────────
 
@@ -122,9 +128,10 @@ def _register_datasets() -> None:
     from detectron2.data.datasets import register_coco_instances
 
     _splits = [
-        (TRAIN_DATASET, COCO_TRAIN_ANN, COCO_TRAIN_IMG_DIR),
-        (EVAL_DATASET, COCO_VAL_ANN, COCO_VAL_IMG_DIR),
-        (CALIB_DATASET, COCO_CALIB_ANN, COCO_VAL_IMG_DIR)
+        (COCO_TRAIN_DATASET, COCO_TRAIN_ANN, COCO_TRAIN_IMG_DIR),
+        (COCO_EVAL_DATASET, COCO_VAL_ANN, COCO_VAL_IMG_DIR),
+        (COCO_CALIB_DATASET, COCO_CALIB_ANN, COCO_VAL_IMG_DIR),
+        (OBJECTS365_DATASET, OBJECTS365_VAL_ANN, OBJECTS365_VAL_IMG_DIR),
     ]
 
     for name, ann, img_dir in _splits:
@@ -274,7 +281,7 @@ def _base_yolof_cfg(weights_path: str = PRETRAINED_WEIGHTS):
 
 # ── Evaluation / inference config ─────────────────────────────────────────────
 
-def build_eval_cfg(dataset: str = EVAL_DATASET, cfg_file: str | Path = YOLOF_BASE_YAML, weights_path: str | Path = PRETRAINED_WEIGHTS, calibration: bool = False):
+def build_eval_cfg(dataset: str = COCO_EVAL_DATASET, cfg_file: str | Path = YOLOF_BASE_YAML, weights_path: str | Path = PRETRAINED_WEIGHTS, calibration: bool = False):
     """
     Lightweight CfgNode for inference-only passes (soup evaluation,
     loss landscape measurement, cross-domain evaluation).
@@ -282,8 +289,8 @@ def build_eval_cfg(dataset: str = EVAL_DATASET, cfg_file: str | Path = YOLOF_BAS
     Parameters
     ----------
     dataset : str
-        Detectron2 dataset name — one of SELECTION_DATASET, EVAL_DATASET,
-        VOC_DATASET, or TRAIN_DATASET.
+        Detectron2 dataset name — one of SELECTION_DATASET, COCO_EVAL_DATASET,
+        VOC_DATASET, or COCO_TRAIN_DATASET.
     """
     cfg = _base_yolof_cfg(weights_path=weights_path)
 
@@ -310,7 +317,7 @@ def build_eval_cfg(dataset: str = EVAL_DATASET, cfg_file: str | Path = YOLOF_BAS
     else:
         cfg.SOLVER.IMS_PER_BATCH = BATCH_SIZE_PER_GPU * max(NUM_GPUS, torch.cuda.device_count())
 
-    cfg.DATASETS.TRAIN = (TRAIN_DATASET,)
+    cfg.DATASETS.TRAIN = (COCO_TRAIN_DATASET,)
     cfg.DATASETS.TEST  = (dataset,)
 
     cfg.OUTPUT_DIR = RESULTS_DIR

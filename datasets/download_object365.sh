@@ -47,8 +47,8 @@ for i in $(seq 0 15); do
     echo "${BASE}/images/v1/patch${i}.tar.gz" >> "${DOWNLOAD_LIST}"
 done
 
-# Validation patches 16 to 42 are stored under v2.
-for i in $(seq 16 42); do
+# Validation patches 16 to 43 are stored under v2.
+for i in $(seq 16 43); do
     echo "${BASE}/images/v2/patch${i}.tar.gz" >> "${DOWNLOAD_LIST}"
 done
 

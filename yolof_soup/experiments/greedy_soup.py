@@ -748,9 +748,9 @@ def run(
     logger.info("  Loaded %d ingredients.", len(ingredient_states))
 
     # Determine selection + eval dataset names
-    from yolof_soup.config.experiment_config import SELECTION_DATASET, EVAL_DATASET
+    from yolof_soup.config.experiment_config import SELECTION_DATASET, COCO_EVAL_DATASET
     selection_dataset = SELECTION_DATASET
-    eval_dataset = EVAL_DATASET
+    eval_dataset = COCO_EVAL_DATASET
 
     # ── Run experiments ───────────────────────────────────────────────────────
     all_results: Dict[str, Any] = {}

@@ -25,6 +25,7 @@ class ExperimentRunSpec:
     changed_hyperparameter: str
     expected_gpu: str
     source_checkpoint_kind: str
+    checkpoint_path: Path
     ingredient_index: Optional[int] = None
 
 
@@ -42,88 +43,97 @@ RUN_SPECS: Tuple[ExperimentRunSpec, ...] = (
         run_id="L1",
         role="ingredient",
         run_type="full_finetune",
-        run_name="finetune_thesis_L1",
+        run_name="L1",
         changed_hyperparameter="base_config_anchor",
         expected_gpu="RTX 5070 Ti",
         source_checkpoint_kind="pretrained_base",
         ingredient_index=0,
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/ingridients-refined/L1/model_best.pth")
     ),
     ExperimentRunSpec(
         run_id="L2",
         role="ingredient",
         run_type="full_finetune",
-        run_name="finetune_thesis_L2",
+        run_name="L2",
         changed_hyperparameter="learning_rate",
         expected_gpu="RTX 5070 Ti",
         source_checkpoint_kind="pretrained_base",
         ingredient_index=1,
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/ingridients-refined/L2/model_best.pth")
     ),
     ExperimentRunSpec(
         run_id="L3",
         role="ingredient",
         run_type="full_finetune",
-        run_name="finetune_thesis_L3",
+        run_name="L3",
         changed_hyperparameter="weight_decay",
         expected_gpu="RTX 5070 Ti",
         source_checkpoint_kind="pretrained_base",
         ingredient_index=2,
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/ingridients-refined/L3/model_best.pth")
     ),
     ExperimentRunSpec(
         run_id="L4",
         role="ingredient",
         run_type="full_finetune",
-        run_name="finetune_thesis_L4",
+        run_name="L4",
         changed_hyperparameter="training_epochs",
         expected_gpu="RTX 5070 Ti",
         source_checkpoint_kind="pretrained_base",
         ingredient_index=3,
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/ingridients-refined/L4/model_best.pth")
     ),
     ExperimentRunSpec(
-        run_id="C1",
+        run_id="R1",
         role="ingredient",
         run_type="full_finetune",
-        run_name="finetune_thesis_C1",
+        run_name="R1",
         changed_hyperparameter="batch_size",
         expected_gpu="RTX 5090",
         source_checkpoint_kind="pretrained_base",
         ingredient_index=4,
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/ingridients-refined/R1/model_best.pth")
     ),
     ExperimentRunSpec(
-        run_id="C2",
+        run_id="R2",
         role="ingredient",
         run_type="full_finetune",
-        run_name="finetune_thesis_C2",
+        run_name="R2",
         changed_hyperparameter="lr_schedule",
         expected_gpu="RTX 5090",
         source_checkpoint_kind="pretrained_base",
         ingredient_index=5,
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/ingridients-refined/R2/model_best.pth")
     ),
     ExperimentRunSpec(
         run_id="D1",
-        role="head_finetune",
+        role="decoder_finetune",
         run_type="decoder_finetune",
-        run_name="finetune_thesis_D1",
+        run_name="D1",
         changed_hyperparameter="merge_source_M2",
         expected_gpu="RTX 5070 Ti",
         source_checkpoint_kind="merged_soup",
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/decoder-finetune/D1/model_best.pth")
     ),
     ExperimentRunSpec(
         run_id="D2",
-        role="head_finetune",
+        role="decoder_finetune",
         run_type="decoder_finetune",
-        run_name="finetune_thesis_D2",
+        run_name="D2",
         changed_hyperparameter="merge_source_best_of_M3_M4",
         expected_gpu="RTX 5070 Ti",
         source_checkpoint_kind="merged_soup",
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/decoder-finetune/D2/model_best.pth")
     ),
     ExperimentRunSpec(
         run_id="C3",
-        role="final_pipeline",
+        role="decoder_finetune",
         run_type="decoder_finetune",
-        run_name="finetune_thesis_C3",
+        run_name="C3",
         changed_hyperparameter="final_pipeline_selection",
-        expected_gpu="RTX 5090",
+        expected_gpu="RTX 5070 Ti",
         source_checkpoint_kind="merged_soup",
+        checkpoint_path=Path("/home/nisalperera/YOLOF/output/soup_exps/decoder-finetune/C3/model_best.pth")
     ),
 )
 
