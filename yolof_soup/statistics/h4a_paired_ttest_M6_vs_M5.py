@@ -1,94 +1,127 @@
 """
-RQ4 / H4a — M6 (tri-component learned α+β, independent pairs)
-            vs M5 (shared α+β pair)
+RQ4a / H4a (granularity contrast) -- M6 (tri-component learned α+β,
+            three independent pairs) vs M5 (shared α+β pair).
 
-Test (Section 3.5.4, Test 1):
-  Paired-sample t-test over 80 per-class AP values.
-  Cohen's d, 10 000-resample bootstrap 95 % CI.
-  Wilcoxon signed-rank robustness check.
+STATISTICAL METHOD (updated)
+-----------------------------
+The previous version ran a paired t-test, Cohen's d, a class-resampled
+10,000-replicate bootstrap, and a Wilcoxon test over 80 per-class AP
+values. That treats COCO categories as independent observations, which
+is not valid for the reasons documented in bootstrap_core.py and in the
+other scripts in this package.
 
-Decision rule: reject H04a if p < 0.05 AND 95 % CI lower bound ≥ 0.
+This version runs a single PAIRED IMAGE-LEVEL BOOTSTRAP comparison of M6
+vs M5 on the held-out COCO evaluation images, reusing each model's already
+computed COCO-format predictions and the shared bootstrap draws generated
+by generate_coco_bootstrap_manifest.py.
 
-Input file:
-  results/phase3_soup_results.json
-    Keys: condition_5 → per_class_ap, condition_6 → per_class_ap
+Decision rule (pre-specified): reject H04a if
+  - one-sided bootstrap p-value < 0.05, AND
+  - 95% bootstrap CI lower bound > 0.
+
+(No separate multiple-testing correction is needed here because this is a
+single confirmatory contrast; if you also run this test as part of a
+larger family alongside H1/H3/H4c in run_all_stats.py, apply Holm
+correction across the FULL set of confirmatory contrasts there instead of
+here, to avoid double correction.)
+
+Input files
+-----------
+  results/ground_truth_heldout.json
+  results/bootstrap_manifest/bootstrap_image_ids.npy
+  configs/h4a_predictions.json
+      {
+        "condition_5": "results/predictions/condition_5.json",
+        "condition_6": "results/predictions/condition_6.json"
+      }
 """
 
-"""
-RQ4 / H4a — M6 vs M5
-per_class_ap format: [[class_name, AP, AR], ...] — AP (index 1) used, AR discarded.
-"""
+from __future__ import annotations
 
+import argparse
 import json
 import pathlib
-import numpy as np
-from scipy import stats
+
+from yolof_soup.statistics.bootstrap_core import (
+    apply_decision_rule,
+    load_bootstrap_manifest_inputs,
+    load_json,
+    run_comparison,
+    save_result_artifacts,
+)
 
 RESULTS_DIR = pathlib.Path("results")
-SOUP_FILE = RESULTS_DIR / "phase3_soup_results.json"
-N_BOOT = 10_000
-RNG_SEED = 42
+GROUND_TRUTH_FILE = RESULTS_DIR / "ground_truth_heldout.json"
+BOOTSTRAP_IMAGE_IDS_FILE = RESULTS_DIR / "bootstrap_manifest" / "bootstrap_image_ids.npy"
+PREDICTIONS_CONFIG_FILE = pathlib.Path("configs") / "h4a_predictions.json"
+
 ALPHA = 0.05
+WORKERS = 4
 
 
-def extract_ap_array(per_class_ap, expected_len=80, field_name="per_class_ap"):
-    if not isinstance(per_class_ap, list):
-        raise TypeError(f"{field_name} must be a list of [class_name, AP, AR] triples.")
-    ap_values, class_names = [], []
-    for i, entry in enumerate(per_class_ap):
-        if not isinstance(entry, (list, tuple)) or len(entry) < 2:
-            raise ValueError(f"{field_name}[{i}] must be [class_name, AP, AR]; got {entry!r}")
-        class_name, ap = entry[0], entry[1]
-        if not isinstance(ap, (int, float)):
-            raise TypeError(f"{field_name}[{i}] AP must be numeric; got {type(ap)} -> {ap!r}")
-        class_names.append(class_name)
-        ap_values.append(float(ap))
-    arr = np.array(ap_values, dtype=float)
-    if expected_len is not None and len(arr) != expected_len:
-        raise ValueError(f"{field_name} must contain {expected_len} classes, got {len(arr)}.")
-    return arr, class_names
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="H4a: M6 vs M5 paired image-level bootstrap.")
+    parser.add_argument("--ground-truth", type=pathlib.Path, default=GROUND_TRUTH_FILE)
+    parser.add_argument("--bootstrap-image-ids", type=pathlib.Path, default=BOOTSTRAP_IMAGE_IDS_FILE)
+    parser.add_argument("--predictions-config", type=pathlib.Path, default=PREDICTIONS_CONFIG_FILE)
+    parser.add_argument("--workers", type=int, default=WORKERS)
+    parser.add_argument("--alpha", type=float, default=ALPHA)
+    return parser.parse_args()
 
 
-def main():
-    with open(SOUP_FILE) as f:
-        soup = json.load(f)
+def main() -> None:
+    args = parse_args()
 
-    m5, names_m5 = extract_ap_array(soup["condition_5"]["per_class_ap"], field_name="condition_5.per_class_ap")
-    m6, names_m6 = extract_ap_array(soup["condition_6"]["per_class_ap"], field_name="condition_6.per_class_ap")
+    ground_truth, bootstrap_image_ids = load_bootstrap_manifest_inputs(
+        ground_truth_path=args.ground_truth,
+        bootstrap_image_ids_path=args.bootstrap_image_ids,
+    )
 
-    if names_m5 != names_m6:
-        raise ValueError("Class order mismatch between condition_5 and condition_6 per_class_ap.")
+    predictions_config = load_json(args.predictions_config)
+    for key in ("condition_5", "condition_6"):
+        if key not in predictions_config:
+            raise ValueError(f"{args.predictions_config} is missing key: '{key}'")
 
-    diff = m6 - m5
-    t_stat, p_value = stats.ttest_rel(m6, m5)
-    cohens_d = diff.mean() / diff.std(ddof=1)
+    result = run_comparison(
+        name="H4a: M6 (tri-component learned) vs M5 (shared learned)",
+        model_a_name="M5",
+        model_a_predictions_path=predictions_config["condition_5"],
+        model_b_name="M6",
+        model_b_predictions_path=predictions_config["condition_6"],
+        ground_truth=ground_truth,
+        ground_truth_path=args.ground_truth,
+        bootstrap_image_ids=bootstrap_image_ids,
+        workers=args.workers,
+    )
 
-    rng = np.random.default_rng(RNG_SEED)
-    boot_means = np.array([rng.choice(diff, size=len(diff), replace=True).mean()
-                           for _ in range(N_BOOT)])
-    ci_lo, ci_hi = np.percentile(boot_means, [2.5, 97.5])
+    # Single confirmatory contrast: no Holm correction needed on its own,
+    # but note in run_all_stats.py if this is folded into a larger family.
+    apply_decision_rule(result, p_holm_adjusted=result["bootstrap"]["p_one_sided_model_b_greater"], alpha=args.alpha, practical_threshold_ap_points=0.0)
 
-    w_stat, w_p = stats.wilcoxon(m6, m5)
+    print("\n" + "=" * 70)
+    print("H4a -- Paired image-level bootstrap: M6 vs M5")
+    print("=" * 70)
+    print(f"  Observed AP50:95 M5: {result['model_a']['observed_ap50_95']:.4f}")
+    print(f"  Observed AP50:95 M6: {result['model_b']['observed_ap50_95']:.4f}")
+    print(f"  Mean Δ (M6 - M5): {result['observed_difference_ap_points']:+.4f} pp")
+    print(f"  95% bootstrap CI: [{result['bootstrap']['ci_95_percentile_lower']:+.4f}, {result['bootstrap']['ci_95_percentile_upper']:+.4f}]")
+    print(f"  One-sided p: {result['bootstrap']['p_one_sided_model_b_greater']:.6f}")
 
-    print("\n" + "="*60)
-    print("H4a — Paired t-test: M6 vs M5 (per-class AP, n=80)")
-    print("="*60)
-    print(f"  t({len(diff)-1}) = {t_stat:.4f}, p = {p_value:.4f}")
-    print(f"  Mean Δ (M6 − M5) = {diff.mean():+.4f} pp")
-    print(f"  Cohen's d = {cohens_d:.4f}")
-    print(f"  95 % boot CI = [{ci_lo:.4f}, {ci_hi:.4f}]")
-    print(f"  Wilcoxon: W = {w_stat:.1f}, p = {w_p:.4f}")
-
-    decision = "REJECT H04a" if p_value < ALPHA and ci_lo >= 0 else "FAIL TO REJECT H04a"
+    decision = (
+        "REJECT H04a"
+        if result["bootstrap"]["p_one_sided_model_b_greater"] < args.alpha
+        and result["bootstrap"]["ci_95_percentile_lower"] > 0.0
+        else "FAIL TO REJECT H04a"
+    )
     print(f"  Decision: {decision}")
 
-    out = RESULTS_DIR / "h4a_results.json"
-    with open(out, "w") as f:
-        json.dump({"t": float(t_stat), "p": float(p_value), "cohens_d": float(cohens_d),
-                   "ci_lower": float(ci_lo), "ci_upper": float(ci_hi),
-                   "wilcoxon_W": float(w_stat), "wilcoxon_p": float(w_p),
-                   "decision": decision}, f, indent=2)
-    print(f"  Results saved → {out}")
+    output_dir = RESULTS_DIR / "h4a_bootstrap"
+    save_result_artifacts(result, output_dir, file_stem="m6_vs_m5")
+
+    out_path = RESULTS_DIR / "h4a_results.json"
+    with open(out_path, "w") as f:
+        json.dump({"family": "RQ4a / H4a", "comparison": result, "decision_label": decision}, f, indent=2, default=float)
+    print(f"  Results saved -> {out_path}")
 
 
 if __name__ == "__main__":

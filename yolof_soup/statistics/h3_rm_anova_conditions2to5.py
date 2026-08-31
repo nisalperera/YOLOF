@@ -1,197 +1,264 @@
 """
-RQ3 / H3 — Coefficient learning strategy comparison (Conditions 2–5)
+RQ3 / H3 (renamed from earlier RQ2/H2 label) -- Coefficient-learning
+strategy comparison across Conditions 2-6.
 
-Tests (Section 3.5.3):
-  Test 1 : One-way RM-ANOVA over 80 per-class AP values, Conditions 2–5
-           (Greenhouse-Geisser corrected; Tukey/Bonferroni post-hoc).
-  Test 2 : Paired t-test Condition 3 (Dirichlet) vs Condition 4 (Fisher).
-  Test 3 : Two-way RM-ANOVA: strategy (Dirichlet vs Fisher) × component
-           (cls, bbox, obj), applied to learned coefficient magnitudes.
+STATISTICAL METHOD (updated)
+-----------------------------
+The previous version ran a one-way repeated-measures ANOVA with
+Greenhouse-Geisser correction and Bonferroni-corrected pairwise t-tests
+over 80 per-class AP values, treating each COCO category as a "subject".
+That is invalid: categories are not independent repeated measures of the
+same underlying construct, they are correlated components of one mAP
+estimate.
 
-Decision rule: H03 rejected if ≥ 1 pairwise contrast p < 0.05 AND ΔmAP ≥ 0.5 pp.
+Test 1 (updated): rather than an omnibus ANOVA over classes, this script
+now runs a predefined, limited family of pairwise PAIRED IMAGE-LEVEL
+BOOTSTRAP contrasts among Conditions 2-6, with Holm-Bonferroni correction
+across the family. This directly answers "is condition X practically and
+statistically better than condition Y" without the class-independence
+assumption.
 
-Input files:
-  results/phase3_soup_results.json
-    Keys required: condition_2 … condition_5, each with "per_class_ap" (len 80).
-    Keys for Test 3: condition_3 and condition_4 must additionally contain
-      "coefficients": {"cls": [...], "bbox": [...], "obj": [...]}
-      where each list has N=6 values (one per ingredient model).
+Test 2 (updated): Condition 3 (Dirichlet) vs Condition 4 (Fisher) is one
+of the planned pairwise contrasts in Test 1 and is reported there; it is
+no longer a separate ad hoc per-class paired t-test.
+
+Test 3 (UNCHANGED IN PRINCIPLE): the two-way comparison of learned
+coefficient magnitudes (cls / bbox / obj) across the Dirichlet vs Fisher
+strategies uses N = 6 ingredient models as the sampling unit. That is a
+legitimate independent-ish sampling unit for this specific question (it is
+not COCO categories), so a repeated-measures / mixed design over the 6
+ingredient models remains defensible. It is retained here using paired
+tests over the 6-model coefficient vectors, NOT over classes.
+
+Decision rule for Test 1 (pre-specified, revised):
+  H03 rejected for a specific contrast if, after Holm-Bonferroni adjustment
+  across the planned contrast family:
+    - Holm-adjusted one-sided p-value < 0.05, AND
+    - 95% bootstrap CI lower bound > 0, AND
+    - observed |ΔmAP| >= 0.5 pp.
+
+Input files
+-----------
+  results/ground_truth_heldout.json
+  results/bootstrap_manifest/bootstrap_image_ids.npy
+  configs/h3_predictions.json
+      {
+        "condition_2": "results/predictions/condition_2.json",
+        "condition_3": "results/predictions/condition_3.json",
+        "condition_4": "results/predictions/condition_4.json",
+        "condition_5": "results/predictions/condition_5.json",
+        "condition_6": "results/predictions/condition_6.json"
+      }
+  results/phase3_soup_results.json (optional; for Test 3 coefficient magnitudes only)
 """
 
-"""
-RQ3 / H3 — Coefficient learning strategy comparison (Conditions 2–5)
-per_class_ap format: [[class_name, AP, AR], ...] — AP (index 1) used, AR discarded.
-"""
+from __future__ import annotations
 
+import argparse
+import itertools
 import json
 import pathlib
+
 import numpy as np
 from scipy import stats
 
+from yolof_soup.statistics.bootstrap_core import (
+    apply_decision_rule,
+    holm_adjust,
+    load_bootstrap_manifest_inputs,
+    load_json,
+    run_comparison,
+    save_result_artifacts,
+)
+
 RESULTS_DIR = pathlib.Path("results")
-SOUP_FILE = RESULTS_DIR / "phase3_soup_results.json"
-N_CLASSES = 80
+GROUND_TRUTH_FILE = RESULTS_DIR / "ground_truth_heldout.json"
+BOOTSTRAP_IMAGE_IDS_FILE = RESULTS_DIR / "bootstrap_manifest" / "bootstrap_image_ids.npy"
+PREDICTIONS_CONFIG_FILE = pathlib.Path("configs") / "h3_predictions.json"
+SOUP_FILE_FOR_COEFFICIENTS = RESULTS_DIR / "phase3_soup_results.json"
+
 ALPHA = 0.05
 PRACTICAL_THRESHOLD = 0.5
+WORKERS = 4
+
+CONDITION_LABELS = {
+    "condition_2": "Condition2 (component uniform)",
+    "condition_3": "Condition3 (Dirichlet)",
+    "condition_4": "Condition4 (Fisher-weighted)",
+    "condition_5": "M5 (shared learned α+β)",
+    "condition_6": "M6 (tri-component learned α+β)",
+}
+
+# Planned pairwise contrast family for Test 1. Kept deliberately small to
+# limit multiple-testing burden. M6 vs M5 is intentionally EXCLUDED here
+# because it is the dedicated confirmatory RQ3(H3 in Ch.1 numbering)/H4a
+# test and is run in h4a_paired_ttest_M6_vs_M5.py to avoid double-counting
+# the same contrast in two Holm-corrected families.
+PLANNED_CONTRASTS = [
+    ("condition_2", "condition_3"),
+    ("condition_2", "condition_4"),
+    ("condition_2", "condition_5"),
+    ("condition_2", "condition_6"),
+    ("condition_3", "condition_4"),
+]
 
 
-def extract_ap_array(per_class_ap, expected_len=80, field_name="per_class_ap"):
-    if not isinstance(per_class_ap, list):
-        raise TypeError(f"{field_name} must be a list of [class_name, AP, AR] triples.")
-    ap_values, class_names = [], []
-    for i, entry in enumerate(per_class_ap):
-        if not isinstance(entry, (list, tuple)) or len(entry) < 2:
-            raise ValueError(f"{field_name}[{i}] must be [class_name, AP, AR]; got {entry!r}")
-        class_name, ap = entry[0], entry[1]
-        if not isinstance(ap, (int, float)):
-            raise TypeError(f"{field_name}[{i}] AP must be numeric; got {type(ap)} -> {ap!r}")
-        class_names.append(class_name)
-        ap_values.append(float(ap))
-    arr = np.array(ap_values, dtype=float)
-    if expected_len is not None and len(arr) != expected_len:
-        raise ValueError(f"{field_name} must contain {expected_len} classes, got {len(arr)}.")
-    return arr, class_names
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="RQ3/H3 planned pairwise bootstrap contrasts.")
+    parser.add_argument("--ground-truth", type=pathlib.Path, default=GROUND_TRUTH_FILE)
+    parser.add_argument("--bootstrap-image-ids", type=pathlib.Path, default=BOOTSTRAP_IMAGE_IDS_FILE)
+    parser.add_argument("--predictions-config", type=pathlib.Path, default=PREDICTIONS_CONFIG_FILE)
+    parser.add_argument("--coefficients-file", type=pathlib.Path, default=SOUP_FILE_FOR_COEFFICIENTS)
+    parser.add_argument("--workers", type=int, default=WORKERS)
+    parser.add_argument("--alpha", type=float, default=ALPHA)
+    parser.add_argument("--practical-threshold", type=float, default=PRACTICAL_THRESHOLD)
+    return parser.parse_args()
 
 
-def check_class_order(names_a, names_b, label_a, label_b):
-    if names_a != names_b:
-        raise ValueError(f"Class order mismatch between {label_a} and {label_b}.")
-
-
-def greenhouse_geisser_epsilon(data: np.ndarray) -> float:
-    n, k = data.shape
-    grand_mean = data.mean()
-    row_means = data.mean(axis=1, keepdims=True)
-    col_means = data.mean(axis=0, keepdims=True)
-    S = data - row_means - col_means + grand_mean
-    cov = (S.T @ S) / (n - 1)
-    cov_trace = np.trace(cov)
-    cov_sq_trace = np.trace(cov @ cov)
-    numerator = cov_trace ** 2
-    denominator = (k - 1) * (cov_sq_trace - (cov_trace ** 2) / k)
-    return float(np.clip(numerator / denominator, 1 / (k - 1), 1.0))
-
-
-def rm_anova(data: np.ndarray, labels: list):
-    n, k = data.shape
-    grand_mean = data.mean()
-    ss_between = n * np.sum((data.mean(axis=0) - grand_mean) ** 2)
-    ss_subjects = k * np.sum((data.mean(axis=1) - grand_mean) ** 2)
-    ss_error = np.sum((data - grand_mean) ** 2) - ss_between - ss_subjects
-    df_b, df_e = k - 1, (n - 1) * (k - 1)
-    F = (ss_between / df_b) / (ss_error / df_e)
-    p = stats.f.sf(F, df_b, df_e)
-    eps = greenhouse_geisser_epsilon(data)
-    p_gg = stats.f.sf(F, df_b * eps, df_e * eps)
-    eta_sq = ss_between / (ss_between + ss_error)
-    print(f"  F({df_b}, {df_e}) = {F:.4f}, p = {p:.4f}")
-    print(f"  GG epsilon = {eps:.4f}  →  p_GG = {p_gg:.4f}  |  η² = {eta_sq:.4f}")
-    return {"F": F, "p": p, "p_gg": p_gg, "eta_sq": eta_sq, "epsilon": eps}
-
-
-def post_hoc_pairwise(data: np.ndarray, labels: list):
-    from itertools import combinations
-    pairs = list(combinations(range(len(labels)), 2))
-    n_comp = len(pairs)
+def run_test1_pairwise_bootstrap(
+    predictions_config: dict,
+    ground_truth: dict,
+    ground_truth_path: pathlib.Path,
+    bootstrap_image_ids: np.ndarray,
+    workers: int,
+) -> list[dict]:
     results = []
-    for i, j in pairs:
-        d = data[:, j] - data[:, i]
-        t, p = stats.ttest_rel(data[:, j], data[:, i])
-        p_bonf = min(p * n_comp, 1.0)
-        mean_d = d.mean()
-        print(f"  {labels[i]} vs {labels[j]}: t = {t:.4f}, p = {p:.4f}, "
-              f"p_Bonf = {p_bonf:.4f}, mean Δ = {mean_d:+.4f}")
-        results.append({"A": labels[i], "B": labels[j], "t": t, "p": p,
-                        "p_bonferroni": p_bonf, "mean_diff": mean_d})
+    for key_a, key_b in PLANNED_CONTRASTS:
+        result = run_comparison(
+            name=f"H3-Test1: {CONDITION_LABELS[key_a]} vs {CONDITION_LABELS[key_b]}",
+            model_a_name=CONDITION_LABELS[key_a],
+            model_a_predictions_path=predictions_config[key_a],
+            model_b_name=CONDITION_LABELS[key_b],
+            model_b_predictions_path=predictions_config[key_b],
+            ground_truth=ground_truth,
+            ground_truth_path=ground_truth_path,
+            bootstrap_image_ids=bootstrap_image_ids,
+            workers=workers,
+        )
+        results.append(result)
     return results
 
 
-def main():
-    with open(SOUP_FILE) as f:
-        soup = json.load(f)
+def run_test3_coefficient_magnitude_analysis(coefficients_file: pathlib.Path) -> dict | None:
+    """
+    Legitimate paired analysis: N = 6 ingredient models are the sampling
+    unit, not COCO categories. Retained largely as before.
+    """
+    if not coefficients_file.is_file():
+        print(f"NOTE: {coefficients_file} not found; Test 3 skipped.")
+        return None
 
-    raw_keys = ["condition_2", "condition_3", "condition_4", "condition_5"]
-    labels = ["Condition2", "Condition3", "Condition4", "M5"]
+    soup = load_json(coefficients_file)
+    coef3 = soup.get("condition_3", {}).get("coefficients")
+    coef4 = soup.get("condition_4", {}).get("coefficients")
 
-    arrays, ref_names = {}, None
-    for k, lbl in zip(raw_keys, labels):
-        arr, names = extract_ap_array(soup[k]["per_class_ap"], field_name=f"{k}.per_class_ap")
-        if ref_names is None:
-            ref_names = names
-        else:
-            check_class_order(ref_names, names, "condition_2", k)
-        arrays[lbl] = arr
+    if not coef3 or not coef4:
+        print("NOTE: 'coefficients' key missing in condition_3/condition_4; Test 3 skipped.")
+        return None
 
-    data_matrix = np.column_stack([arrays[l] for l in labels])
+    components = ["cls", "bbox", "obj"]
+    strategy_d = np.array([coef3[c] for c in components])  # shape (3, 6)
+    strategy_f = np.array([coef4[c] for c in components])  # shape (3, 6)
 
-    print("\n" + "="*60)
-    print("TEST 1 — One-way RM-ANOVA: Conditions 2, 3, 4, M5")
-    print("="*60)
-    anova_res = rm_anova(data_matrix, labels)
+    if strategy_d.shape[1] < 2 or strategy_f.shape[1] < 2:
+        print("NOTE: fewer than 2 ingredient models available; Test 3 reported descriptively only.")
+        return {
+            "note": "insufficient replicates for inferential test",
+            "means": {c: {"dirichlet": float(np.mean(coef3[c])), "fisher": float(np.mean(coef4[c]))} for c in components},
+        }
 
-    print("\n--- Bonferroni-corrected pairwise post-hoc contrasts ---")
-    posthoc_res = post_hoc_pairwise(data_matrix, labels)
+    strategy_d_mean_per_model = strategy_d.mean(axis=0)  # mean over components, per ingredient model
+    strategy_f_mean_per_model = strategy_f.mean(axis=0)
 
-    max_diff = max(abs(r["mean_diff"]) for r in posthoc_res)
-    sig_contrast = any(r["p_bonferroni"] < ALPHA for r in posthoc_res)
-    decision_h3 = ("REJECT H03" if sig_contrast and max_diff >= PRACTICAL_THRESHOLD
-                   else "FAIL TO REJECT H03")
-    print(f"\n  Decision: {decision_h3}  (max |Δ| = {max_diff:.4f} pp, sig_contrast = {sig_contrast})")
+    t_stat, p_val = stats.ttest_rel(strategy_f_mean_per_model, strategy_d_mean_per_model)
 
-    print("\n" + "="*60)
-    print("TEST 2 — Paired t-test: Condition 3 (Dirichlet) vs Condition 4 (Fisher)")
-    print("="*60)
-    c3, c4 = arrays["Condition3"], arrays["Condition4"]
-    t2, p2 = stats.ttest_rel(c4, c3)
-    diff2 = c4 - c3
-    d2 = diff2.mean() / diff2.std(ddof=1)
-    print(f"  t({len(diff2)-1}) = {t2:.4f}, p = {p2:.4f}")
-    print(f"  Mean Δ (Fisher − Dirichlet) = {diff2.mean():+.4f} pp")
-    print(f"  Cohen's d = {d2:.4f}")
+    per_component = {}
+    for i, comp in enumerate(components):
+        t_c, p_c = stats.ttest_rel(strategy_f[i], strategy_d[i])
+        per_component[comp] = {"t": float(t_c), "p": float(p_c)}
 
-    print("\n" + "="*60)
-    print("TEST 3 — 2-way RM-ANOVA: strategy × component (coefficient magnitudes)")
-    print("="*60)
-    coef3 = soup["condition_3"].get("coefficients", None)
-    coef4 = soup["condition_4"].get("coefficients", None)
-    if coef3 and coef4:
-        components = ["cls", "bbox", "obj"]
-        coef_matrix = np.array([[coef3[c] for c in components],
-                                [coef4[c] for c in components]])
-        coef_matrix = np.transpose(coef_matrix, (2, 0, 1))
-        try:
-            import pingouin as pg
-            import pandas as pd
-            N = coef_matrix.shape[0]
-            records = []
-            for subj in range(N):
-                for s_i, strat in enumerate(["Dirichlet", "Fisher"]):
-                    for c_i, comp in enumerate(components):
-                        records.append({"subject": subj, "strategy": strat,
-                                        "component": comp, "coef": coef_matrix[subj, s_i, c_i]})
-            df_long = pd.DataFrame(records)
-            aov2 = pg.rm_anova(dv="coef", within=["strategy", "component"],
-                               subject="subject", data=df_long, detailed=True)
-            print(aov2.to_string())
-        except ImportError:
-            print("  pingouin not available; reporting marginal effects.")
-            strat_d_mean = coef_matrix[:, 0, :].mean(axis=1)
-            strat_f_mean = coef_matrix[:, 1, :].mean(axis=1)
-            t_s, p_s = stats.ttest_rel(strat_f_mean, strat_d_mean)
-            print(f"  Strategy main effect: t = {t_s:.4f}, p = {p_s:.4f}")
-            for c_i, comp in enumerate(components):
-                comp_vals = coef_matrix[:, :, c_i].mean(axis=1)
-                print(f"  Component {comp}: mean coef = {comp_vals.mean():.4f} ± {comp_vals.std():.4f}")
-    else:
-        print("  'coefficients' key not found; Test 3 skipped.")
+    print("\nTest 3 -- Coefficient magnitude, Dirichlet vs Fisher (unit = N=6 ingredient models)")
+    print(f"  Overall strategy effect: t = {t_stat:.4f}, p = {p_val:.4f}")
+    for comp, values in per_component.items():
+        print(f"  Component {comp}: t = {values['t']:.4f}, p = {values['p']:.4f}")
 
-    out = RESULTS_DIR / "h3_rq3_results.json"
-    with open(out, "w") as f:
-        json.dump({"test1_anova": anova_res, "test1_posthoc": posthoc_res,
-                   "decision": decision_h3,
-                   "test2_paired_t": {"t": float(t2), "p": float(p2), "cohens_d": float(d2)}},
-                  f, indent=2, default=float)
-    print(f"\nResults saved → {out}")
+    return {
+        "sampling_unit": "N=6 ingredient models (legitimate; not COCO categories)",
+        "overall_strategy_effect": {"t": float(t_stat), "p": float(p_val)},
+        "per_component": per_component,
+    }
+
+
+def main() -> None:
+    args = parse_args()
+
+    ground_truth, bootstrap_image_ids = load_bootstrap_manifest_inputs(
+        ground_truth_path=args.ground_truth,
+        bootstrap_image_ids_path=args.bootstrap_image_ids,
+    )
+
+    predictions_config = load_json(args.predictions_config)
+    required_keys = {"condition_2", "condition_3", "condition_4", "condition_5", "condition_6"}
+    missing = required_keys - set(predictions_config)
+    if missing:
+        raise ValueError(f"{args.predictions_config} is missing keys: {sorted(missing)}")
+
+    print("=" * 70)
+    print("TEST 1 -- Planned pairwise image-level bootstrap contrasts (Conditions 2-6)")
+    print("=" * 70)
+
+    test1_results = run_test1_pairwise_bootstrap(
+        predictions_config=predictions_config,
+        ground_truth=ground_truth,
+        ground_truth_path=args.ground_truth,
+        bootstrap_image_ids=bootstrap_image_ids,
+        workers=args.workers,
+    )
+
+    raw_p_values = [r["bootstrap"]["p_one_sided_model_b_greater"] for r in test1_results]
+    holm_p_values = holm_adjust(raw_p_values)
+
+    any_significant_contrast = False
+    max_abs_diff = 0.0
+
+    for result, p_holm in zip(test1_results, holm_p_values):
+        apply_decision_rule(result, p_holm, alpha=args.alpha, practical_threshold_ap_points=args.practical_threshold)
+        any_significant_contrast = any_significant_contrast or result["decision"]["support_directional_superiority"]
+        max_abs_diff = max(max_abs_diff, abs(result["observed_difference_ap_points"]))
+
+        print(f"\n  {result['name']}")
+        print(f"    ΔAP = {result['observed_difference_ap_points']:+.4f} pp, 95% CI [{result['bootstrap']['ci_95_percentile_lower']:+.4f}, {result['bootstrap']['ci_95_percentile_upper']:+.4f}]")
+        print(f"    Holm p = {result['bootstrap']['p_one_sided_holm_adjusted']:.6f}, decision = {'SUPPORTED' if result['decision']['support_directional_superiority'] else 'NOT SUPPORTED'}")
+
+    decision_h3 = (
+        "REJECT H03 (at least one strategy differs practically and statistically)"
+        if any_significant_contrast
+        else "FAIL TO REJECT H03 (strategy-level differences are small / not significant)"
+    )
+    print(f"\nOverall Test 1 decision: {decision_h3} (max |ΔAP| observed = {max_abs_diff:.4f} pp)")
+
+    print("\n" + "=" * 70)
+    print("TEST 3 -- Coefficient magnitude analysis (N=6 ingredient models, legitimate unit)")
+    print("=" * 70)
+    test3_result = run_test3_coefficient_magnitude_analysis(args.coefficients_file)
+
+    output_dir = RESULTS_DIR / "h3_rq3_bootstrap"
+    for index, result in enumerate(test1_results, start=1):
+        save_result_artifacts(result, output_dir, file_stem=f"contrast_{index}")
+
+    output = {
+        "method": "Test 1: paired image-level bootstrap over planned Condition 2-6 contrasts. Test 3: paired t-tests over N=6 ingredient-model coefficient magnitudes.",
+        "family": "RQ3 / H3",
+        "test1_pairwise_contrasts": test1_results,
+        "test1_overall_decision": decision_h3,
+        "test3_coefficient_magnitude": test3_result,
+        "multiple_testing": {"method": "Holm-Bonferroni", "alpha": args.alpha, "n_comparisons": len(test1_results)},
+    }
+
+    out_path = RESULTS_DIR / "h3_rq3_results.json"
+    with open(out_path, "w") as f:
+        json.dump(output, f, indent=2, default=float)
+    print(f"\nResults saved -> {out_path}")
 
 
 if __name__ == "__main__":
