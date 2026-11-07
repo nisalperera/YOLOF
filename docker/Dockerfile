@@ -81,55 +81,20 @@ ARG HOME=/home/${USER}
 ENV HOME=${HOME}
 WORKDIR ${HOME}
 
-COPY wheels/ ${HOME}/tmp/
-
-RUN if [ -f "${HOME}/tmp/pytorch_wheels.zip" ]; then \
-        sudo mkdir -p "${HOME}/tmp/pytorch_wheels" && \
-        sudo unzip -o "${HOME}/tmp/pytorch_wheels.zip" -d "${HOME}/tmp/pytorch_wheels"; \
-    fi
-
-RUN if [ -f "${HOME}/tmp/wheels.zip" ]; then \
-        sudo mkdir -p "${HOME}/tmp/wheels" && \
-        sudo unzip -o "${HOME}/tmp/wheels.zip" -d "${HOME}/tmp/wheels"; \
-    fi
-
-# Install PyTorch (as non-root user)
-SHELL ["/bin/bash", "-c"]
-RUN IFS='.' read -r MAJOR MINOR _ <<< "$CUDA_VERSION" && \
-    CUDA_VERSION_NO_DOT="${MAJOR}${MINOR}" && \
-    if [ -d "${HOME}/tmp/pytorch_wheels" ] && compgen -G "${HOME}/tmp/pytorch_wheels/*.whl" > /dev/null; then \
-        python3 -m pip install --no-cache-dir --no-index --find-links "${HOME}/tmp/pytorch_wheels" \
-            torch==${TORCH_VERSION}+cu${CUDA_VERSION_NO_DOT} \
-            torchvision==${TORCHVISION_VERSION}+cu${CUDA_VERSION_NO_DOT}; \
-    else \
-        python3 -m pip install --no-cache-dir \
-            torch==${TORCH_VERSION}+cu${CUDA_VERSION_NO_DOT} \
-            torchvision==${TORCHVISION_VERSION}+cu${CUDA_VERSION_NO_DOT} \
-            --index-url https://download.pytorch.org/whl/cu${CUDA_VERSION_NO_DOT}; \
-    fi
-SHELL ["/bin/sh", "-c"]
-
-# Install Python dependencies from git repos
-RUN python3 -m pip install --no-cache-dir 'git+https://github.com/JunnYu/mish-cuda.git' && \
-    python3 -m pip install --no-cache-dir 'git+https://github.com/facebookresearch/detectron2.git'
-
 # Replace pillow with pillow-simd
 RUN python3 -m pip uninstall pillow -y && \
     CC="cc -mavx2" python3 -m pip install -U --force-reinstall pillow-simd
 
 # Install requirements.txt BEFORE copying code (better caching)
-COPY  --chown=${UID}:${GID} requirements.txt /tmp/requirements.txt
+# COPY  --chown=${UID}:${GID} requirements.txt /tmp/requirements.txt
 # RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.txt
-
-RUN if [ -d "${HOME}/tmp/wheels" ] && compgen -G "${HOME}/tmp/wheels/*.whl" > /dev/null; then \
-        python3 -m pip install --no-cache-dir --no-index --find-links "${HOME}/tmp/wheels" \
-        -r /tmp/requirements.txt; \
-    else \
-        python3 -m pip install --no-cache-dir -r /tmp/requirements.txt; \
-    fi
 
 # Copy application code (use --chown to avoid extra layer)
 COPY  --chown=${UID}:${GID} . ${HOME}/YOLOF
+
+# Only run this if you don't have PyTorch installed in your base image. 
+# This will install PyTorch and torchvision with the specified CUDA version.
+RUN python3 ${HOME}/YOLOF/tools/install_pytorch.py
 
 # Install YOLOF package
 RUN python3 -m pip install --no-cache-dir -e ${HOME}/YOLOF
