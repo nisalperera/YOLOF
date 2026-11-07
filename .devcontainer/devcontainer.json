@@ -1,5 +1,6 @@
 {
   "name": "YOLOF",
+  "image": "yolof:latest",
   "build": {
     "context": "${localWorkspaceFolder}",
     "dockerfile": "${localWorkspaceFolder}/docker/Dockerfile",
@@ -7,6 +8,7 @@
       "UID": "${localEnv:USER_ID:1000}",
       "GID": "${localEnv:GROUP_ID:1000}",
       "USER": "${localEnv:USER:ubuntu}"
+    //   "WANDB_API_KEY": "${localEnv:WANDB_API_KEY}"
     }
   },
   "workspaceFolder": "/home/${localEnv:USER}/YOLOF",
