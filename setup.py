@@ -26,11 +26,11 @@ def is_installed_mish_cuda():
     
 install_requires = get_requirements()
 
-if not is_installed_mish:
+if not is_installed_mish_cuda():
     print("Installing mish-cuda from GitHub")
     install_requires.append("mish-cuda @ git+https://github.com/JunnYu/mish-cuda.git")
 
-if not is_installed_d2:
+if not is_installed_detectron2:
     print("Installing detectron2 from GitHub")
     install_requires.append("detectron2 @ git+https://github.com/facebookresearch/detectron2.git")
     
